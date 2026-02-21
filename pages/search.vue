@@ -756,6 +756,7 @@
     :is-open="isModalOpen"
     @close="closeModal"
     @request="handleRequest"
+    @subscribed="handleSubscribe"
   />
 
   <!-- Toast Notifications -->
@@ -1156,6 +1157,17 @@ const handleRequest = async (mediaId: number, mediaType: string, seasons?: numbe
       'Request Error'
     )
   }
+}
+
+const handleSubscribe = (tmdbId: number) => {
+  // Show success toast
+  toast.success(
+    'Show has been subscribed. Monitoring for future episodes.',
+    'Subscribed!'
+  )
+  
+  // Close modal
+  closeModal()
 }
 
 const hasBeenRequested = (media: any) => {

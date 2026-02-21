@@ -156,6 +156,34 @@
             <AppIcon icon="lucide:settings" size="18" class="nav-icon" />
             <span :class="{ 'opacity-0 w-0 overflow-hidden': isCollapsed && !isMobile }" class="transition-all duration-300">Settings</span>
           </NuxtLink>
+          
+          <!-- Stop Current Processing Button -->
+          <div 
+            v-if="currentlyProcessing"
+            class="mt-2 pt-2 border-t border-border"
+          >
+            <button
+              @click="stopCurrentProcessing"
+              :disabled="stoppingProcessing"
+              class="nav-link group relative w-full justify-start bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 hover:border-red-500/50 text-red-500"
+              :class="{ 'opacity-50 cursor-not-allowed': stoppingProcessing }"
+            >
+              <AppIcon 
+                :icon="stoppingProcessing ? 'lucide:loader-2' : 'lucide:square'" 
+                size="18" 
+                class="nav-icon"
+                :class="{ 'animate-spin': stoppingProcessing }"
+              />
+              <div class="flex-1 min-w-0" :class="{ 'opacity-0 w-0 overflow-hidden': isCollapsed && !isMobile }">
+                <span class="transition-all duration-300 block text-xs font-semibold">
+                  {{ stoppingProcessing ? 'Stopping...' : 'Stop Processing' }}
+                </span>
+                <span v-if="currentProcessingItem && !isCollapsed && !isMobile" class="text-[10px] text-red-400/80 truncate block mt-0.5">
+                  {{ currentProcessingItem.title }}
+                </span>
+              </div>
+            </button>
+          </div>
         </nav>
 
         <!-- User section -->
@@ -296,8 +324,80 @@ watch(isMobileMenuOpen, (open) => {
   }
 })
 
+// Current processing tracking
+const currentlyProcessing = ref(false)
+const currentProcessingItem = ref<any>(null)
+const stoppingProcessing = ref(false)
+let processingPollInterval: NodeJS.Timeout | null = null
+
+const checkCurrentProcessing = async () => {
+  try {
+    const response = await $fetch('/api/processing/current')
+    if (response && response.processing) {
+      currentlyProcessing.value = true
+      currentProcessingItem.value = response.media
+    } else {
+      currentlyProcessing.value = false
+      currentProcessingItem.value = null
+    }
+  } catch (error) {
+    // Silently fail - processing might not be available
+    currentlyProcessing.value = false
+    currentProcessingItem.value = null
+  }
+}
+
+const stopCurrentProcessing = async () => {
+  if (stoppingProcessing.value || !currentlyProcessing.value) return
+  
+  const confirmed = confirm(
+    `Stop processing "${currentProcessingItem.value?.title || 'current item'}"?\n\n` +
+    `This will:\n` +
+    `• Mark the item as failed\n` +
+    `• Remove it from the queue\n` +
+    `• Move to the next item in queue\n\n` +
+    `Are you sure?`
+  )
+  
+  if (!confirmed) return
+  
+  stoppingProcessing.value = true
+  
+  try {
+    const response = await $fetch('/api/processing/stop', {
+      method: 'POST'
+    })
+    
+    if (response && response.success) {
+      // Clear current processing
+      currentlyProcessing.value = false
+      currentProcessingItem.value = null
+      
+      // Show success message
+      alert(`Successfully stopped processing for "${response.title}"`)
+      
+      // Refresh immediately
+      await checkCurrentProcessing()
+    }
+  } catch (error: any) {
+    console.error('Error stopping processing:', error)
+    alert(`Error: ${error.message || 'Failed to stop processing'}`)
+  } finally {
+    stoppingProcessing.value = false
+  }
+}
+
+// Poll for current processing status every 5 seconds
+onMounted(() => {
+  checkCurrentProcessing()
+  processingPollInterval = setInterval(checkCurrentProcessing, 5000)
+})
+
 // Cleanup on unmount
 onUnmounted(() => {
+  if (processingPollInterval) {
+    clearInterval(processingPollInterval)
+  }
   if (process.client) {
     document.body.classList.remove('menu-open')
   }

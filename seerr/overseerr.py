@@ -7,7 +7,7 @@ import requests
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from seerr.config import OVERSEERR_API_BASE_URL, OVERSEERR_API_KEY, USE_DATABASE
+from seerr import config
 from seerr.database import get_db
 from seerr.unified_media_manager import track_media_request, update_media_request_status, get_media_by_tmdb
 from seerr.unified_models import UnifiedMedia
@@ -96,9 +96,17 @@ def get_overseerr_media_requests() -> list[dict]:
     Returns:
         list[dict]: List of aggregated media request objects
     """
-    url = f"{OVERSEERR_API_BASE_URL}/api/v1/request?take=500&filter=approved&sort=added"
+    # Access config dynamically to get current values
+    base_url = config.OVERSEERR_API_BASE_URL
+    api_key = config.OVERSEERR_API_KEY
+    
+    if not base_url or not api_key:
+        logger.error("Overseerr configuration not set")
+        return []
+    
+    url = f"{base_url}/api/v1/request?take=500&filter=approved&sort=added"
     headers = {
-        "X-Api-Key": OVERSEERR_API_KEY
+        "X-Api-Key": api_key
     }
     
     # API request logging
@@ -147,9 +155,17 @@ def get_all_overseerr_requests_for_media(overseerr_media_id: int) -> list[dict]:
     Returns:
         list[dict]: List of all requests for this media ID
     """
-    url = f"{OVERSEERR_API_BASE_URL}/api/v1/request?take=500&filter=all&sort=added"
+    # Access config dynamically to get current values
+    base_url = config.OVERSEERR_API_BASE_URL
+    api_key = config.OVERSEERR_API_KEY
+    
+    if not base_url or not api_key:
+        logger.error("Overseerr configuration not set")
+        return []
+    
+    url = f"{base_url}/api/v1/request?take=500&filter=all&sort=added"
     headers = {
-        "X-Api-Key": OVERSEERR_API_KEY
+        "X-Api-Key": api_key
     }
     
     try:
@@ -183,9 +199,17 @@ def get_media_id_from_request_id(request_id: int) -> Optional[int]:
     Returns:
         Optional[int]: Media ID if found, None otherwise
     """
-    url = f"{OVERSEERR_API_BASE_URL}/api/v1/request/{request_id}"
+    # Access config dynamically to get current values
+    base_url = config.OVERSEERR_API_BASE_URL
+    api_key = config.OVERSEERR_API_KEY
+    
+    if not base_url or not api_key:
+        logger.error("Overseerr configuration not set")
+        return None
+    
+    url = f"{base_url}/api/v1/request/{request_id}"
     headers = {
-        "X-Api-Key": OVERSEERR_API_KEY
+        "X-Api-Key": api_key
     }
     
     try:
@@ -220,9 +244,17 @@ def mark_completed(media_id: int, tmdb_id: int) -> bool:
     Returns:
         bool: True if successful, False otherwise
     """
-    url = f"{OVERSEERR_API_BASE_URL}/api/v1/media/{media_id}/available"
+    # Access config dynamically to get current values
+    base_url = config.OVERSEERR_API_BASE_URL
+    api_key = config.OVERSEERR_API_KEY
+    
+    if not base_url or not api_key:
+        logger.error("Overseerr configuration not set")
+        return False
+    
+    url = f"{base_url}/api/v1/media/{media_id}/available"
     headers = {
-        "X-Api-Key": OVERSEERR_API_KEY,
+        "X-Api-Key": api_key,
         "Content-Type": "application/json"
     }
     data = {"is4k": False}
@@ -261,7 +293,7 @@ def get_media_request_by_id(overseerr_request_id: int) -> Optional[UnifiedMedia]
     Returns:
         Optional[UnifiedMedia]: Media object if found, None otherwise
     """
-    if not USE_DATABASE:
+    if not config.USE_DATABASE:
         return None
     
     try:
@@ -287,7 +319,7 @@ def get_media_requests_by_status(status: str, limit: int = 100) -> List[UnifiedM
     Returns:
         List[UnifiedMedia]: List of media records
     """
-    if not USE_DATABASE:
+    if not config.USE_DATABASE:
         return []
     
     try:
@@ -300,4 +332,68 @@ def get_media_requests_by_status(status: str, limit: int = 100) -> List[UnifiedM
         return []
     finally:
         if 'db' in locals():
-            db.close() 
+            db.close()
+
+def check_media_availability(tmdb_id: int, media_type: str) -> Optional[Dict[str, Any]]:
+    """
+    Check if media is available in Seerr by querying the media endpoint
+    
+    Args:
+        tmdb_id (int): TMDB ID of the media
+        media_type (str): 'movie' or 'tv'
+        
+    Returns:
+        Optional[Dict]: Media info with availability status if found, None otherwise
+        {
+            'available': bool,
+            'status': int,  # 1 or 5 = Available, 3 = Processing, etc.
+            'media_id': int,
+            'tmdb_id': int
+        }
+    """
+    # Access config dynamically to get current values
+    base_url = config.OVERSEERR_API_BASE_URL
+    api_key = config.OVERSEERR_API_KEY
+    
+    if not base_url or not api_key:
+        logger.error("Overseerr configuration not set")
+        return None
+    
+    # Seerr API endpoint: GET /api/v1/{media_type}/{tmdb_id}
+    url = f"{base_url}/api/v1/{media_type}/{tmdb_id}"
+    headers = {
+        "X-Api-Key": api_key
+    }
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 404:
+            # Media not found in Seerr
+            return None
+        
+        if response.status_code != 200:
+            logger.error(f"Failed to check media availability: {response.status_code}")
+            return None
+        
+        data = response.json()
+        media_info = data.get('mediaInfo', {})
+        status = media_info.get('status')
+        
+        # Status values: 0=Unknown, 1=Available, 2=Partial, 3=Processing, 4=Partially Available, 5=Available
+        is_available = status == 1 or status == 5
+        
+        return {
+            'available': is_available,
+            'status': status,
+            'media_id': media_info.get('id'),
+            'tmdb_id': tmdb_id,
+            'media_type': media_type
+        }
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error checking media availability for {tmdb_id}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected error checking media availability: {e}")
+        return None 

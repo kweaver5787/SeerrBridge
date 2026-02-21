@@ -871,6 +871,160 @@ def update_media_processing_status(media_id: int, status: str, processing_stage:
         if 'db' in locals():
             db.close()
 
+def mark_episodes_complete(media_id: int, season_number: int = None, episode_numbers: List[int] = None, 
+                          check_seerr: bool = True) -> Dict[str, Any]:
+    """
+    Mark episodes or entire season as complete for a TV show.
+    
+    Args:
+        media_id (int): ID of the media record
+        season_number (int, optional): Season number to mark. If None, marks entire show.
+        episode_numbers (List[int], optional): Specific episode numbers to mark (e.g., [9, 10]).
+                                              If None and season_number provided, marks all failed/unprocessed in that season.
+        check_seerr (bool): Whether to check and mark as available in Seerr
+        
+    Returns:
+        Dict with success status, message, and details about what was marked
+    """
+    try:
+        from seerr.overseerr import check_media_availability, mark_completed
+        from seerr.database import get_db
+        
+        db = get_db()
+        try:
+            media = db.query(UnifiedMedia).filter(UnifiedMedia.id == media_id).first()
+            if not media:
+                return {"success": False, "message": "Media record not found"}
+            
+            if media.media_type != 'tv':
+                return {"success": False, "message": "This function only works for TV shows"}
+            
+            # Check Seerr availability if requested
+            if check_seerr:
+                availability = check_media_availability(media.tmdb_id, media.media_type)
+                if availability and availability.get('available'):
+                    seerr_media_id = availability.get('media_id')
+                    if seerr_media_id:
+                        mark_completed(seerr_media_id, media.tmdb_id)
+            
+            # Get or initialize seasons_data
+            seasons_data = media.seasons_data or []
+            if not seasons_data:
+                log_warning("Episode Marking", f"No seasons_data found for {media.title}, cannot mark episodes", 
+                           module="unified_media_manager", function="mark_episodes_complete")
+                return {"success": False, "message": "No season data available for this show"}
+            
+            marked_episodes = []
+            updated_seasons = []
+            all_seasons_complete = True
+            
+            # Process each season
+            for season_data in seasons_data:
+                season_num = season_data.get('season_number')
+                
+                # If season_number specified, only process that season
+                if season_number is not None and season_num != season_number:
+                    updated_seasons.append(season_data)
+                    # Check if this season is complete
+                    confirmed = set(season_data.get('confirmed_episodes', []))
+                    aired = season_data.get('aired_episodes', 0)
+                    if len(confirmed) < aired:
+                        all_seasons_complete = False
+                    continue
+                
+                # Get current episode lists
+                confirmed_episodes = set(season_data.get('confirmed_episodes', []))
+                failed_episodes = set(season_data.get('failed_episodes', []))
+                unprocessed_episodes = set(season_data.get('unprocessed_episodes', []))
+                aired_episodes = season_data.get('aired_episodes', 0)
+                
+                # Determine which episodes to mark
+                episodes_to_mark = set()
+                
+                if episode_numbers:
+                    # Mark specific episodes
+                    for ep_num in episode_numbers:
+                        ep_id = f"E{str(ep_num).zfill(2)}"
+                        episodes_to_mark.add(ep_id)
+                elif season_number is not None:
+                    # Mark all failed and unprocessed episodes in this season
+                    episodes_to_mark = failed_episodes | unprocessed_episodes
+                else:
+                    # Mark entire show - all failed and unprocessed in all seasons
+                    episodes_to_mark = failed_episodes | unprocessed_episodes
+                
+                # Update episode lists
+                for ep_id in episodes_to_mark:
+                    confirmed_episodes.add(ep_id)
+                    failed_episodes.discard(ep_id)
+                    unprocessed_episodes.discard(ep_id)
+                    marked_episodes.append(f"Season {season_num} {ep_id}")
+                
+                # Update season data
+                season_data['confirmed_episodes'] = sorted(list(confirmed_episodes))
+                season_data['failed_episodes'] = sorted(list(failed_episodes))
+                season_data['unprocessed_episodes'] = sorted(list(unprocessed_episodes))
+                season_data['updated_at'] = datetime.utcnow().isoformat()
+                
+                # Check if season is complete
+                if len(confirmed_episodes) >= aired_episodes and aired_episodes > 0:
+                    season_data['status'] = 'completed'
+                    season_data['is_complete'] = True
+                else:
+                    season_data['status'] = 'in_progress'
+                    season_data['is_complete'] = False
+                    all_seasons_complete = False
+                
+                updated_seasons.append(season_data)
+            
+            # Update media record
+            media.seasons_data = updated_seasons
+            media.last_checked_at = datetime.utcnow()
+            media.updated_at = datetime.utcnow()
+            
+            # If all seasons are complete, mark show as completed
+            if all_seasons_complete:
+                media.status = 'completed'
+                media.processing_completed_at = datetime.utcnow()
+                # Preserve subscription status - don't change is_subscribed
+                log_info("Episode Marking", f"All seasons complete for {media.title}, marked show as completed", 
+                        module="unified_media_manager", function="mark_episodes_complete")
+            else:
+                # Keep current status or set to processing if it was failed
+                if media.status == 'failed':
+                    media.status = 'processing'
+            
+            db.commit()
+            
+            # Build response message
+            if episode_numbers:
+                message = f"Marked {len(episode_numbers)} episode(s) as complete in Season {season_number}"
+            elif season_number is not None:
+                message = f"Marked all remaining episodes in Season {season_number} as complete"
+            else:
+                message = f"Marked all remaining episodes in all seasons as complete"
+            
+            if all_seasons_complete:
+                message += " (all seasons now complete)"
+            
+            return {
+                "success": True,
+                "message": message,
+                "marked_episodes": marked_episodes,
+                "all_seasons_complete": all_seasons_complete,
+                "media_id": media_id
+            }
+            
+        finally:
+            db.close()
+            
+    except Exception as e:
+        log_error("Database Error", f"Error marking episodes as complete: {e}", 
+                 module="unified_media_manager", function="mark_episodes_complete")
+        if 'db' in locals():
+            db.rollback()
+        return {"success": False, "message": f"Error: {str(e)}"}
+
 def get_media_by_tmdb(tmdb_id: int, media_type: str) -> Optional[UnifiedMedia]:
     """
     Get media record by TMDB ID and media type
@@ -1009,6 +1163,343 @@ def update_tv_subscription(tmdb_id: int, season_number: int, episode_count: int 
         
     except Exception as e:
         log_error("Database Error", f"Error updating TV subscription: {e}")
+        if 'db' in locals():
+            db.rollback()
+        return False
+    finally:
+        if 'db' in locals():
+            db.close()
+
+def subscribe_to_existing_show(tmdb_id: int, mark_existing_completed: bool = True) -> Optional[int]:
+    """
+    Subscribe to a TV show that may already exist in the library.
+    Creates a media record with all existing seasons marked as completed,
+    and sets up subscription for future episodes.
+    
+    Args:
+        tmdb_id (int): TMDB ID of the TV show
+        mark_existing_completed (bool): If True, mark all existing seasons as completed
+        
+    Returns:
+        Optional[int]: Media ID if successful, None if failed
+    """
+    try:
+        from seerr.trakt import get_media_details_from_trakt, get_all_seasons_from_trakt
+        from seerr.enhanced_season_manager import EnhancedSeasonManager
+        from seerr.image_utils import store_media_images
+        from datetime import datetime, timezone
+        
+        db = get_db()
+        
+        # Check if media already exists
+        existing_media = db.query(UnifiedMedia).filter(
+            UnifiedMedia.tmdb_id == tmdb_id,
+            UnifiedMedia.media_type == 'tv'
+        ).first()
+        
+        if existing_media:
+            # Update existing media to subscribed
+            existing_media.is_subscribed = True
+            existing_media.subscription_active = True
+            existing_media.subscription_last_checked = datetime.utcnow()
+            
+            # If mark_existing_completed is True, mark all seasons as completed
+            if mark_existing_completed and existing_media.seasons_data:
+                seasons_data = existing_media.seasons_data
+                for season in seasons_data:
+                    if isinstance(season, dict):
+                        season['status'] = 'completed'
+                        season['updated_at'] = datetime.utcnow().isoformat()
+                        # Mark all aired episodes as confirmed
+                        aired_episodes = season.get('aired_episodes', 0)
+                        if aired_episodes > 0:
+                            season['confirmed_episodes'] = [
+                                f"E{str(i).zfill(2)}" for i in range(1, aired_episodes + 1)
+                            ]
+                            season['unprocessed_episodes'] = []
+                
+                existing_media.seasons_data = seasons_data
+                existing_media.status = 'completed'
+            
+            db.commit()
+            log_info("TV Subscription", f"Updated existing subscription for {existing_media.title}")
+            return existing_media.id
+        
+        # Fetch media details from Trakt
+        media_details = get_media_details_from_trakt(str(tmdb_id), 'tv')
+        if not media_details:
+            log_error("TV Subscription", f"Failed to fetch media details for TMDB ID {tmdb_id}")
+            return None
+        
+        trakt_id = media_details.get('trakt_id')
+        if not trakt_id:
+            log_error("TV Subscription", f"No Trakt ID found for TMDB ID {tmdb_id}")
+            return None
+        
+        # Fetch all seasons from Trakt
+        all_seasons = get_all_seasons_from_trakt(str(trakt_id))
+        if not all_seasons:
+            log_warning("TV Subscription", f"No seasons found for show {tmdb_id}, creating with empty seasons")
+            all_seasons = []
+        
+        # Create seasons_data with all existing seasons marked as completed
+        seasons_data = []
+        for season_info in all_seasons:
+            season_number = season_info.get('number', 0)
+            if season_number == 0:  # Skip specials
+                continue
+            
+            # Get episode count from season info
+            episodes = season_info.get('episodes', [])
+            episode_count = len(episodes)
+            
+            # Count aired episodes (episodes with air_date in the past or today)
+            current_date = datetime.now(timezone.utc).date()
+            aired_episodes = 0
+            for episode in episodes:
+                air_date = episode.get('first_aired')
+                if air_date:
+                    try:
+                        if isinstance(air_date, str):
+                            ep_date = datetime.fromisoformat(air_date.replace('Z', '+00:00')).date()
+                        else:
+                            ep_date = air_date.date() if hasattr(air_date, 'date') else current_date
+                        if ep_date <= current_date:
+                            aired_episodes += 1
+                    except Exception:
+                        aired_episodes += 1  # Assume aired if we can't parse date
+            
+            # Create season data with all aired episodes marked as confirmed
+            confirmed_episodes = []
+            if mark_existing_completed and aired_episodes > 0:
+                confirmed_episodes = [f"E{str(i).zfill(2)}" for i in range(1, aired_episodes + 1)]
+            
+            season_data = EnhancedSeasonManager.create_enhanced_season_data(
+                season_number=season_number,
+                episode_count=episode_count,
+                aired_episodes=aired_episodes,
+                confirmed_episodes=confirmed_episodes,
+                failed_episodes=[],
+                unprocessed_episodes=[],
+                is_discrepant=False
+            )
+            seasons_data.append(season_data)
+        
+        # Determine title and year
+        title = media_details.get('title', 'Unknown Show')
+        year = media_details.get('year', 0)
+        
+        # Create new media record
+        new_media = UnifiedMedia(
+            tmdb_id=tmdb_id,
+            imdb_id=media_details.get('imdb_id', ''),
+            trakt_id=str(trakt_id),
+            media_type='tv',
+            title=title,
+            year=year,
+            overview=media_details.get('overview', ''),
+            status='completed' if mark_existing_completed else 'pending',
+            processing_stage='subscription_created',
+            processing_completed_at=datetime.utcnow() if mark_existing_completed else None,
+            last_checked_at=datetime.utcnow(),
+            is_subscribed=True,
+            subscription_active=True,
+            subscription_last_checked=datetime.utcnow(),
+            seasons_data=seasons_data,
+            total_seasons=len(seasons_data),
+            genres=media_details.get('genres', []),
+            runtime=media_details.get('runtime', 0),
+            rating=media_details.get('rating', 0.0),
+            vote_count=media_details.get('vote_count', 0),
+            popularity=media_details.get('popularity', 0.0),
+            poster_url=media_details.get('poster_url', ''),
+            fanart_url=media_details.get('fanart_url', ''),
+            backdrop_url=media_details.get('backdrop_url', ''),
+            released_date=media_details.get('released_date'),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        
+        db.add(new_media)
+        db.commit()
+        
+        # Store images
+        try:
+            store_media_images(tmdb_id, 'tv', trakt_id)
+        except Exception as e:
+            log_warning("TV Subscription", f"Failed to store images for {title}: {e}")
+        
+        log_info("TV Subscription", f"Created subscription for {title} with {len(seasons_data)} seasons marked as completed")
+        
+        # Create notification
+        create_notification(
+            type='info',
+            title='Show Subscribed',
+            message=f"Subscribed to {title}. Monitoring for future episodes.",
+            media_id=new_media.id,
+            media_type='tv',
+            media_title=title,
+            old_status=None,
+            new_status='completed'
+        )
+        
+        return new_media.id
+        
+    except Exception as e:
+        log_error("Database Error", f"Error subscribing to show: {e}")
+        if 'db' in locals():
+            db.rollback()
+        return None
+    finally:
+        if 'db' in locals():
+            db.close()
+
+def refresh_media_from_trakt(media_id: int, force_image_refresh: bool = False) -> bool:
+    """
+    Refresh media metadata and images from Trakt API for existing media.
+    Does not change status or re-queue the item.
+    
+    Args:
+        media_id (int): ID of the media record to refresh
+        force_image_refresh (bool): If True, refresh images even if they exist
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        from seerr.trakt import get_media_details_from_trakt, get_detailed_media_info
+        from seerr.image_utils import store_media_images
+        
+        db = get_db()
+        
+        # Get existing media record
+        media = db.query(UnifiedMedia).filter(UnifiedMedia.id == media_id).first()
+        if not media:
+            log_error("Trakt Refresh", f"Media record with ID {media_id} not found")
+            return False
+        
+        if not media.tmdb_id:
+            log_error("Trakt Refresh", f"Media {media_id} has no TMDB ID, cannot refresh from Trakt")
+            return False
+        
+        log_info("Trakt Refresh", f"Refreshing Trakt data for {media.title} (ID: {media_id})")
+        
+        # Fetch fresh metadata from Trakt
+        media_details = get_media_details_from_trakt(str(media.tmdb_id), media.media_type)
+        if not media_details:
+            log_error("Trakt Refresh", f"Failed to fetch media details from Trakt for {media.title}")
+            return False
+        
+        # Get Trakt ID (use existing if available, otherwise from fetched data)
+        trakt_id = media.trakt_id or media_details.get('trakt_id')
+        if not trakt_id:
+            log_error("Trakt Refresh", f"No Trakt ID found for {media.title}")
+            return False
+        
+        # Fetch detailed info if we have Trakt ID
+        detailed_info = None
+        if trakt_id:
+            try:
+                detailed_info = get_detailed_media_info(int(trakt_id), 'movie' if media.media_type == 'movie' else 'show')
+            except Exception as e:
+                log_warning("Trakt Refresh", f"Could not fetch detailed info: {e}, using basic details")
+        
+        # Prepare update data
+        update_data = {}
+        
+        # Update basic metadata
+        if media_details.get('title'):
+            update_data['title'] = media_details['title']
+        if media_details.get('year'):
+            update_data['year'] = media_details['year']
+        if media_details.get('overview'):
+            update_data['overview'] = media_details['overview']
+        if media_details.get('imdb_id'):
+            update_data['imdb_id'] = media_details['imdb_id']
+        if trakt_id:
+            update_data['trakt_id'] = str(trakt_id)
+        
+        # Update detailed metadata if available
+        if detailed_info:
+            if detailed_info.get('genres'):
+                update_data['genres'] = detailed_info['genres']
+            if detailed_info.get('runtime'):
+                update_data['runtime'] = detailed_info['runtime']
+            if detailed_info.get('rating'):
+                update_data['rating'] = float(detailed_info['rating'])
+            if detailed_info.get('votes'):
+                update_data['vote_count'] = detailed_info['votes']
+            if detailed_info.get('popularity'):
+                update_data['popularity'] = float(detailed_info['popularity'])
+            if detailed_info.get('released_date'):
+                update_data['released_date'] = detailed_info['released_date']
+        
+        # Fetch and update images
+        if force_image_refresh or not media.poster_image:
+            log_info("Trakt Refresh", f"Fetching images for {media.title} from Trakt...")
+            try:
+                image_data = store_media_images(
+                    media_details.get('title', media.title),
+                    media.tmdb_id,
+                    media.media_type,
+                    str(trakt_id)
+                )
+                
+                if image_data:
+                    # Update image fields
+                    if 'poster_url' in image_data:
+                        update_data['poster_url'] = image_data['poster_url']
+                    if 'poster_image' in image_data:
+                        update_data['poster_image'] = image_data['poster_image']
+                    if 'poster_image_format' in image_data:
+                        update_data['poster_image_format'] = image_data['poster_image_format']
+                    if 'poster_image_size' in image_data:
+                        update_data['poster_image_size'] = image_data['poster_image_size']
+                    
+                    if 'thumb_url' in image_data:
+                        update_data['thumb_url'] = image_data['thumb_url']
+                    if 'thumb_image' in image_data:
+                        update_data['thumb_image'] = image_data['thumb_image']
+                    if 'thumb_image_format' in image_data:
+                        update_data['thumb_image_format'] = image_data['thumb_image_format']
+                    if 'thumb_image_size' in image_data:
+                        update_data['thumb_image_size'] = image_data['thumb_image_size']
+                    
+                    if 'fanart_url' in image_data:
+                        update_data['fanart_url'] = image_data['fanart_url']
+                    if 'fanart_image' in image_data:
+                        update_data['fanart_image'] = image_data['fanart_image']
+                    if 'fanart_image_format' in image_data:
+                        update_data['fanart_image_format'] = image_data['fanart_image_format']
+                    if 'fanart_image_size' in image_data:
+                        update_data['fanart_image_size'] = image_data['fanart_image_size']
+                    
+                    if 'backdrop_url' in image_data:
+                        update_data['backdrop_url'] = image_data['backdrop_url']
+                    if 'backdrop_image' in image_data:
+                        update_data['backdrop_image'] = image_data['backdrop_image']
+                    if 'backdrop_image_format' in image_data:
+                        update_data['backdrop_image_format'] = image_data['backdrop_image_format']
+                    if 'backdrop_image_size' in image_data:
+                        update_data['backdrop_image_size'] = image_data['backdrop_image_size']
+                    
+                    log_info("Trakt Refresh", f"Successfully updated images for {media.title}")
+                else:
+                    log_warning("Trakt Refresh", f"Failed to fetch images for {media.title}")
+            except Exception as e:
+                log_warning("Trakt Refresh", f"Error fetching images for {media.title}: {e}")
+        
+        # Apply updates
+        if update_data:
+            update_media_details(media_id, **update_data)
+            log_success("Trakt Refresh", f"Successfully refreshed Trakt data for {media.title}")
+            return True
+        else:
+            log_warning("Trakt Refresh", f"No updates to apply for {media.title}")
+            return False
+        
+    except Exception as e:
+        log_error("Trakt Refresh", f"Error refreshing media from Trakt: {e}")
         if 'db' in locals():
             db.rollback()
         return False

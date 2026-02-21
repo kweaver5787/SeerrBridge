@@ -596,8 +596,15 @@
         @click="closeModal"
       ></div>
       
+      <!-- Click outside to close action menu -->
+      <div 
+        v-if="showActionMenu"
+        class="fixed inset-0 z-[9998]"
+        @click="showActionMenu = false"
+      ></div>
+      
       <!-- Modal Content -->
-      <div class="relative mx-auto max-w-4xl min-h-screen sm:min-h-0 sm:my-4 lg:my-8 bg-card sm:rounded-xl lg:rounded-2xl xl:rounded-3xl shadow-2xl overflow-hidden flex flex-col">
+      <div class="relative mx-auto max-w-4xl min-h-screen sm:min-h-0 sm:my-4 lg:my-8 bg-card sm:rounded-xl lg:rounded-2xl xl:rounded-3xl shadow-2xl overflow-visible flex flex-col">
         <!-- Hero -->
         <div v-if="selectedMedia" class="relative min-h-[200px] sm:h-64 lg:h-80 overflow-hidden bg-gradient-to-br from-primary/20 to-primary/10 flex-shrink-0">
           <img
@@ -607,13 +614,14 @@
             class="absolute inset-0 w-full h-full object-cover opacity-20"
           />
           
-          <!-- Top Right Buttons -->
-          <div class="absolute top-2 right-2 sm:top-4 sm:right-4 z-10 flex items-center gap-1.5 sm:gap-2">
+          <!-- Top Right Buttons - Wrapper with overflow visible to allow dropdown to extend -->
+          <div class="absolute top-2 right-2 sm:top-4 sm:right-4 z-[100] flex items-center gap-1.5 sm:gap-2" style="overflow: visible !important;">
             <!-- Action Menu -->
-            <div class="relative action-menu-container">
+            <div class="relative action-menu-container z-[100]" style="overflow: visible !important;">
               <button
-                @click.stop="showActionMenu = !showActionMenu"
-                class="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full bg-background/90 backdrop-blur-md hover:bg-background border border-border hover:border-primary/50 hover:bg-primary/10 transition-all duration-200 flex items-center justify-center text-foreground hover:text-primary"
+                ref="actionMenuButtonRef"
+                @click.stop="toggleActionMenu"
+                class="w-8 h-8 sm:w-10 sm:h-10 lg:w-12 lg:h-12 rounded-full bg-background/90 backdrop-blur-md hover:bg-background border border-border hover:border-primary/50 hover:bg-primary/10 transition-all duration-200 flex items-center justify-center text-foreground hover:text-primary z-50"
               >
                 <ClientOnly>
                   <Icon 
@@ -627,16 +635,22 @@
                 </ClientOnly>
               </button>
               
-              <!-- Action Menu Dropdown -->
-              <Transition
-                enter-active-class="transition-all duration-200"
-                enter-from-class="opacity-0 -translate-y-2"
-                enter-to-class="opacity-100 translate-y-0"
-                leave-active-class="transition-all duration-150"
-                leave-from-class="opacity-100 translate-y-0"
-                leave-to-class="opacity-0 -translate-y-2"
-              >
-                <div v-if="showActionMenu" class="absolute right-0 top-11 sm:top-12 lg:top-14 w-[calc(100vw-2rem)] sm:w-56 lg:w-64 max-w-[280px] sm:max-w-none bg-background rounded-lg sm:rounded-xl border border-border shadow-lg p-2 z-20">
+              <!-- Action Menu Dropdown - Teleported outside modal to avoid clipping -->
+              <Teleport to="body">
+                <Transition
+                  enter-active-class="transition-all duration-200"
+                  enter-from-class="opacity-0 -translate-y-2"
+                  enter-to-class="opacity-100 translate-y-0"
+                  leave-active-class="transition-all duration-150"
+                  leave-from-class="opacity-100 translate-y-0"
+                  leave-to-class="opacity-0 -translate-y-2"
+                >
+                  <div 
+                    v-if="showActionMenu" 
+                    class="fixed w-[calc(100vw-2rem)] sm:w-56 lg:w-64 max-w-[280px] sm:max-w-none bg-background rounded-lg sm:rounded-xl border border-border shadow-2xl p-2 z-[9999]" 
+                    :style="`top: ${actionMenuPosition.top}px; right: ${actionMenuPosition.right}px; max-height: calc(100vh - 2rem); overflow-y: auto;`"
+                    @click.stop
+                  >
                   <!-- Processing Status -->
                   <div class="px-2 sm:px-3 py-1.5 sm:py-2 border-b border-border mb-1.5 sm:mb-2">
                     <div class="flex items-center justify-between gap-2">
@@ -675,6 +689,26 @@
                     </button>
                     
                     <button
+                      @click.stop="refreshTraktData"
+                      :disabled="refreshingTrakt"
+                      class="w-full flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 text-xs sm:text-sm text-foreground hover:bg-muted rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <AppIcon v-if="!refreshingTrakt" icon="lucide:database" size="14" class="sm:w-4 sm:h-4" />
+                      <AppIcon v-else icon="lucide:loader-2" size="14" class="sm:w-4 sm:h-4 animate-spin" />
+                      <span class="truncate">{{ refreshingTrakt ? 'Refreshing...' : 'Refresh Trakt Data' }}</span>
+                    </button>
+                    
+                    <button
+                      @click.stop="markAsComplete"
+                      :disabled="markingComplete || selectedMedia.status === 'completed'"
+                      class="w-full flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 text-xs sm:text-sm text-foreground hover:bg-muted rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <AppIcon v-if="!markingComplete" icon="lucide:check-circle" size="14" class="sm:w-4 sm:h-4" />
+                      <AppIcon v-else icon="lucide:loader-2" size="14" class="sm:w-4 sm:h-4 animate-spin" />
+                      <span class="truncate">{{ markingComplete ? 'Marking...' : 'Mark as Complete' }}</span>
+                    </button>
+                    
+                    <button
                       @click.stop="toggleIgnoreStatus"
                       class="w-full flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 text-xs sm:text-sm text-foreground hover:bg-muted rounded-lg transition-colors"
                     >
@@ -694,6 +728,7 @@
                   </div>
                 </div>
               </Transition>
+              </Teleport>
             </div>
             
             <!-- Subscription Button (for TV shows) -->
@@ -1583,6 +1618,156 @@
       </div>
     </div>
   </Transition>
+  
+  <!-- Mark Complete Modal (for TV shows with granular selection) -->
+  <Transition
+    enter-active-class="transition-opacity duration-300"
+    enter-from-class="opacity-0"
+    enter-to-class="opacity-100"
+    leave-active-class="transition-opacity duration-200"
+    leave-from-class="opacity-100"
+    leave-to-class="opacity-0"
+  >
+    <div v-if="showMarkCompleteModal && selectedMedia" class="fixed inset-0 z-[100] overflow-y-auto">
+      <!-- Backdrop -->
+      <div class="fixed inset-0 bg-black/50 backdrop-blur-sm" @click="showMarkCompleteModal = false"></div>
+      
+      <!-- Modal Content -->
+      <div class="relative mx-auto max-w-3xl my-8 bg-card rounded-xl shadow-2xl overflow-hidden">
+        <!-- Header -->
+        <div class="bg-gradient-to-r from-primary/20 to-primary/10 p-4 sm:p-6 border-b border-border">
+          <div class="flex items-center justify-between">
+            <div>
+              <h2 class="text-xl sm:text-2xl font-bold text-foreground">Mark Episodes as Complete</h2>
+              <p class="text-sm text-muted-foreground mt-1">{{ selectedMedia.title }}</p>
+            </div>
+            <button
+              @click="showMarkCompleteModal = false"
+              class="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-background/90 hover:bg-background border border-border hover:border-red-500/50 transition-all flex items-center justify-center"
+            >
+              <AppIcon icon="lucide:x" size="20" />
+            </button>
+          </div>
+        </div>
+        
+        <!-- Content -->
+        <div class="p-4 sm:p-6 max-h-[60vh] overflow-y-auto">
+          <p class="text-sm text-muted-foreground mb-4">
+            Select which episodes or seasons to mark as complete. Episodes that are failed or unprocessed will be marked as confirmed.
+          </p>
+          
+          <!-- Mark Entire Show Option -->
+          <div class="mb-4 p-3 border border-border rounded-lg bg-background">
+            <label class="flex items-center gap-3 cursor-pointer">
+              <input
+                type="checkbox"
+                :checked="selectedSeasons.size === selectedMedia.seasons?.length && selectedMedia.seasons?.length > 0"
+                @change="() => {
+                  if (selectedSeasons.size === selectedMedia.seasons?.length) {
+                    selectedSeasons.clear()
+                    selectedEpisodes.clear()
+                  } else {
+                    selectedMedia.seasons?.forEach((s: any) => selectedSeasons.add(s.season_number))
+                    selectedEpisodes.clear()
+                  }
+                }"
+                class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+              />
+              <span class="text-sm font-semibold text-foreground">Mark entire show as complete</span>
+            </label>
+            <p class="text-xs text-muted-foreground ml-7 mt-1">
+              Marks all failed and unprocessed episodes in all seasons as complete
+            </p>
+          </div>
+          
+          <div v-if="selectedMedia.seasons && selectedMedia.seasons.length > 0" class="space-y-4">
+            <div
+              v-for="season in selectedMedia.seasons"
+              :key="season.season_number"
+              class="border border-border rounded-lg p-4 bg-background"
+            >
+              <!-- Season Header -->
+              <div class="flex items-center justify-between mb-3">
+                <div class="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    :checked="selectedSeasons.has(season.season_number)"
+                    @change="toggleSeasonSelection(season.season_number)"
+                    class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                  />
+                  <h3 class="text-base font-semibold text-foreground">Season {{ season.season_number }}</h3>
+                  <span class="text-xs text-muted-foreground">
+                    {{ season.aired_episodes || 0 }} aired
+                    <span v-if="(season.failed_episodes?.length || 0) + (season.unprocessed_episodes?.length || 0) > 0">
+                      • {{ (season.failed_episodes?.length || 0) + (season.unprocessed_episodes?.length || 0) }} remaining
+                    </span>
+                  </span>
+                </div>
+              </div>
+              
+              <!-- Episode List -->
+              <div v-if="!selectedSeasons.has(season.season_number)" class="ml-7 space-y-2">
+                <div
+                  v-for="episodeNum in getEpisodesToMark(season)"
+                  :key="episodeNum"
+                  class="flex items-center gap-2"
+                >
+                  <input
+                    type="checkbox"
+                    :checked="selectedEpisodes.get(season.season_number)?.has(episodeNum) || false"
+                    @change="toggleEpisodeSelection(season.season_number, episodeNum)"
+                    class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+                  />
+                  <label class="text-sm text-foreground cursor-pointer">
+                    Episode {{ episodeNum }}
+                    <span v-if="season.failed_episodes?.includes(`E${String(episodeNum).padStart(2, '0')}`)" class="text-red-500 text-xs ml-1">(failed)</span>
+                    <span v-else-if="season.unprocessed_episodes?.includes(`E${String(episodeNum).padStart(2, '0')}`)" class="text-yellow-500 text-xs ml-1">(unprocessed)</span>
+                  </label>
+                </div>
+                <p v-if="getEpisodesToMark(season).length === 0" class="text-xs text-muted-foreground italic">
+                  All episodes in this season are already confirmed
+                </p>
+              </div>
+            </div>
+          </div>
+          
+          <div v-else class="text-center py-8 text-muted-foreground">
+            <p>No season data available for this show.</p>
+          </div>
+        </div>
+        
+        <!-- Footer -->
+        <div class="bg-background border-t border-border p-4 sm:p-6 flex items-center justify-end gap-3">
+          <Button
+            @click="showMarkCompleteModal = false"
+            variant="outline"
+            size="sm"
+          >
+            Cancel
+          </Button>
+          <Button
+            @click="handleMarkCompleteSubmit"
+            :disabled="markingComplete || (selectedSeasons.size === 0 && selectedEpisodes.size === 0)"
+            size="sm"
+          >
+            <AppIcon v-if="markingComplete" icon="lucide:loader-2" size="16" class="animate-spin mr-2" />
+            <AppIcon v-else icon="lucide:check-circle" size="16" class="mr-2" />
+            <span v-if="markingComplete">Marking...</span>
+            <span v-else-if="selectedSeasons.size === selectedMedia.seasons?.length && selectedMedia.seasons?.length > 0">
+              Mark Entire Show as Complete
+            </span>
+            <span v-else-if="selectedSeasons.size > 0">
+              Mark {{ selectedSeasons.size }} Season(s) as Complete
+            </span>
+            <span v-else-if="selectedEpisodes.size > 0">
+              Mark Selected Episodes as Complete
+            </span>
+            <span v-else>Mark as Complete</span>
+          </Button>
+        </div>
+      </div>
+    </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">
@@ -1745,14 +1930,22 @@ const expandedErrorDetails = ref(false)
 const showDeleteConfirmation = ref(false)
 const deleting = ref(false)
 const showActionMenu = ref(false)
+const actionMenuButtonRef = ref<HTMLElement | null>(null)
+const actionMenuPosition = ref({ top: 0, right: 0 })
+
 
 // Bulk selection state
 const selectedMediaIds = ref<Set<number>>(new Set())
 const bulkRetriggering = ref(false)
 const bulkDeleting = ref(false)
 const bulkIgnoring = ref(false)
+const refreshingTrakt = ref(false)
+const markingComplete = ref(false)
 const showBulkDeleteConfirmation = ref(false)
 const showBulkIgnoreConfirmation = ref(false)
+const showMarkCompleteModal = ref(false)
+const selectedSeasons = ref<Set<number>>(new Set())
+const selectedEpisodes = ref<Map<number, Set<number>>>(new Map()) // Map<seasonNumber, Set<episodeNumber>>
 
 // Configuration composable
 const { overseerrBaseUrl, hasOverseerrConfig, fetchConfig } = useConfig()
@@ -2098,8 +2291,21 @@ const applyStatFilter = (status: string, mediaType: string) => {
   showFilters.value = false
 }
 
+const toggleActionMenu = () => {
+  if (!showActionMenu.value && actionMenuButtonRef.value) {
+    // Calculate position when opening
+    const rect = actionMenuButtonRef.value.getBoundingClientRect()
+    actionMenuPosition.value = {
+      top: rect.bottom + 8, // 8px gap below button
+      right: window.innerWidth - rect.right
+    }
+  }
+  showActionMenu.value = !showActionMenu.value
+}
+
 const closeModal = () => {
   showDetailsModal.value = false
+  showActionMenu.value = false // Close action menu when modal closes
   
   // Remove mediaId from URL
   const route = useRoute()
@@ -2248,6 +2454,198 @@ const retriggerMedia = async () => {
     // Error retriggering media - could add toast notification here
     console.error('Error retriggering media:', error)
   }
+}
+
+const refreshTraktData = async () => {
+  if (!selectedMedia.value) return
+  
+  refreshingTrakt.value = true
+  
+  try {
+    const response = await $fetch(`/api/media/${selectedMedia.value.id}/refresh-trakt`, {
+      method: 'POST',
+      body: {
+        force_image_refresh: false
+      }
+    })
+    
+    if (response && response.success) {
+      // Refresh the media list to update the UI with new data
+      await refreshData()
+      
+      // Update selected media if it's still selected
+      if (selectedMedia.value) {
+        const updatedMedia = mediaItems.value.find(m => m.id === selectedMedia.value.id)
+        if (updatedMedia) {
+          selectedMedia.value = updatedMedia
+        }
+      }
+      
+      // Show success message
+      alert(`Successfully refreshed Trakt data for "${selectedMedia.value.title}"`)
+    }
+  } catch (error: any) {
+    console.error('Error refreshing Trakt data:', error)
+    alert(`Error refreshing Trakt data: ${error.message || 'Unknown error'}`)
+  } finally {
+    refreshingTrakt.value = false
+  }
+}
+
+const markAsComplete = async () => {
+  if (!selectedMedia.value) return
+  
+  // For TV shows, show granular selection modal
+  if (selectedMedia.value.media_type === 'tv' && selectedMedia.value.seasons && selectedMedia.value.seasons.length > 0) {
+    // Reset selections
+    selectedSeasons.value.clear()
+    selectedEpisodes.value.clear()
+    showMarkCompleteModal.value = true
+    return
+  }
+  
+  // For movies, use simple confirmation
+  const confirmed = confirm(
+    `Mark "${selectedMedia.value.title}" as complete?\n\n` +
+    `This will:\n` +
+    `• Change status from "${selectedMedia.value.status}" to "completed"\n` +
+    `• Stop retry attempts\n` +
+    `• Optionally check if it's available in Seerr\n\n` +
+    `Use this if you've manually added the media to your library.`
+  )
+  
+  if (!confirmed) return
+  
+  await executeMarkComplete()
+}
+
+const executeMarkComplete = async (seasonNumber?: number, episodeNumbers?: number[]) => {
+  if (!selectedMedia.value) return
+  
+  markingComplete.value = true
+  
+  try {
+    const body: any = {
+      check_seerr: true
+    }
+    
+    if (seasonNumber !== undefined) {
+      body.season_number = seasonNumber
+    }
+    
+    if (episodeNumbers && episodeNumbers.length > 0) {
+      body.episode_numbers = episodeNumbers
+    }
+    
+    const response = await $fetch(`/api/media/${selectedMedia.value.id}/mark-complete`, {
+      method: 'POST',
+      body
+    })
+    
+    if (response && response.success) {
+      // Refresh the media list to get updated season data
+      await refreshData()
+      
+      // Update selected media if it's still selected
+      if (selectedMedia.value) {
+        const updatedMedia = mediaItems.value.find(m => m.id === selectedMedia.value!.id)
+        if (updatedMedia) {
+          selectedMedia.value = updatedMedia
+        }
+      }
+      
+      alert(response.message || `Successfully marked "${selectedMedia.value.title}" as complete`)
+      showMarkCompleteModal.value = false
+    }
+  } catch (error: any) {
+    console.error('Error marking as complete:', error)
+    alert(`Error: ${error.message || 'Failed to mark as complete'}`)
+  } finally {
+    markingComplete.value = false
+  }
+}
+
+const handleMarkCompleteSubmit = async () => {
+  if (!selectedMedia.value) return
+  
+  // If all seasons selected (entire show), mark entire show
+  if (selectedSeasons.value.size === selectedMedia.value.seasons?.length && selectedMedia.value.seasons.length > 0) {
+    await executeMarkComplete() // Mark entire show
+    showMarkCompleteModal.value = false
+    return
+  }
+  
+  // If specific seasons selected, mark each season
+  if (selectedSeasons.value.size > 0) {
+    for (const seasonNum of selectedSeasons.value) {
+      await executeMarkComplete(seasonNum)
+    }
+    showMarkCompleteModal.value = false
+    return
+  }
+  
+  // If specific episodes selected, group by season and mark
+  if (selectedEpisodes.value.size > 0) {
+    for (const [seasonNum, episodes] of selectedEpisodes.value.entries()) {
+      if (episodes.size > 0) {
+        await executeMarkComplete(seasonNum, Array.from(episodes))
+      }
+    }
+    showMarkCompleteModal.value = false
+    return
+  }
+  
+  // If nothing selected, show warning
+  alert('Please select at least one season or episode to mark as complete.')
+}
+
+const toggleSeasonSelection = (seasonNumber: number) => {
+  if (selectedSeasons.value.has(seasonNumber)) {
+    selectedSeasons.value.delete(seasonNumber)
+    // Clear episode selections for this season
+    selectedEpisodes.value.delete(seasonNumber)
+  } else {
+    selectedSeasons.value.add(seasonNumber)
+    // Clear episode selections for this season (season selection takes precedence)
+    selectedEpisodes.value.delete(seasonNumber)
+  }
+}
+
+const toggleEpisodeSelection = (seasonNumber: number, episodeNumber: number) => {
+  // If season is selected, deselect it first
+  if (selectedSeasons.value.has(seasonNumber)) {
+    selectedSeasons.value.delete(seasonNumber)
+  }
+  
+  if (!selectedEpisodes.value.has(seasonNumber)) {
+    selectedEpisodes.value.set(seasonNumber, new Set())
+  }
+  
+  const episodes = selectedEpisodes.value.get(seasonNumber)!
+  if (episodes.has(episodeNumber)) {
+    episodes.delete(episodeNumber)
+    if (episodes.size === 0) {
+      selectedEpisodes.value.delete(seasonNumber)
+    }
+  } else {
+    episodes.add(episodeNumber)
+  }
+}
+
+const getEpisodesToMark = (season: any): number[] => {
+  const episodes: number[] = []
+  const failed = season.failed_episodes || []
+  const unprocessed = season.unprocessed_episodes || []
+  
+  for (const epId of [...failed, ...unprocessed]) {
+    // Extract episode number from "E09" format
+    const match = epId.match(/E(\d+)/)
+    if (match) {
+      episodes.push(parseInt(match[1], 10))
+    }
+  }
+  
+  return episodes.sort((a, b) => a - b)
 }
 
 const retriggerMediaFromCard = async (media: ProcessedMedia) => {

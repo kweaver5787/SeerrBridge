@@ -143,6 +143,27 @@
                     <Icon name="mdi:check-circle" class="w-4 h-4 sm:w-5 sm:h-5" />
                     <span class="text-sm sm:text-base font-medium">Already Available</span>
                   </div>
+
+                  <!-- Subscribe Button (for TV shows not in database) -->
+                  <button
+                    v-if="media.mediaType === 'tv' && !inDatabase && !isSubscribing && !subscribeSuccess"
+                    @click="handleSubscribe"
+                    :disabled="isSubscribing"
+                    class="w-full py-2.5 sm:py-3 px-4 sm:px-6 bg-secondary text-secondary-foreground rounded-lg hover:bg-secondary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors font-medium flex items-center justify-center gap-2 text-sm sm:text-base"
+                  >
+                    <Icon v-if="!isSubscribing" name="mdi:bell-plus" class="w-4 h-4 sm:w-5 sm:h-5" />
+                    <Icon v-else name="mdi:loading" class="w-4 h-4 sm:w-5 sm:h-5 animate-spin" />
+                    <span>{{ isSubscribing ? 'Subscribing...' : 'Subscribe to Future Episodes' }}</span>
+                  </button>
+                  
+                  <!-- Subscribe Success Message -->
+                  <div
+                    v-if="subscribeSuccess"
+                    class="w-full py-2.5 sm:py-3 px-4 sm:px-6 bg-success/20 text-success rounded-lg flex items-center justify-center gap-2"
+                  >
+                    <Icon name="mdi:check-circle" class="w-4 h-4 sm:w-5 sm:h-5" />
+                    <span class="text-sm sm:text-base font-medium">Subscribed! Monitoring for new episodes.</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -244,6 +265,7 @@ const props = defineProps<Props>()
 const emit = defineEmits<{
   close: []
   request: [mediaId: number, mediaType: string, seasons?: number[]]
+  subscribed: [tmdbId: number]
 }>()
 
 const isRequesting = ref(false)
@@ -253,6 +275,8 @@ const isLoadingStatus = ref(false)
 const seasons = ref<any[]>([])
 const selectedSeasons = ref<number[]>([])
 const isLoadingSeasons = ref(false)
+const isSubscribing = ref(false)
+const subscribeSuccess = ref(false)
 
 const close = () => {
   emit('close')
@@ -445,6 +469,51 @@ const getDebridMediaManagerUrl = (media: MediaResult) => {
   const mediaType = media.mediaType === 'movie' ? 'movie' : 'show'
   
   return `${baseUrl}/${mediaType}/${media.imdbId}`
+}
+
+const handleSubscribe = async () => {
+  if (!props.media) return
+  
+  isSubscribing.value = true
+  subscribeSuccess.value = false
+  
+  try {
+    const tmdbId = props.media.mediaInfo?.tmdbId || props.media.id
+    console.log('Subscribing to show with TMDB ID:', tmdbId)
+    
+    const response = await $fetch('/api/tv-subscriptions/subscribe', {
+      method: 'POST',
+      body: {
+        tmdb_id: tmdbId,
+        mark_existing_completed: true
+      }
+    })
+    
+    console.log('Subscribe response:', response)
+    
+    if (response && response.success) {
+      subscribeSuccess.value = true
+      inDatabase.value = true // Update status to show it's now in database
+      
+      // Emit subscribe event for parent to handle
+      emit('subscribed', tmdbId)
+      
+      // Close modal after a short delay
+      setTimeout(() => {
+        close()
+      }, 2000)
+    } else {
+      console.error('Subscribe failed - response:', response)
+      alert('Failed to subscribe. Check console for details.')
+    }
+  } catch (error: any) {
+    console.error('Error subscribing to show:', error)
+    // Show error to user
+    const errorMessage = error?.data?.message || error?.message || 'Failed to subscribe to show'
+    alert(`Error: ${errorMessage}`)
+  } finally {
+    isSubscribing.value = false
+  }
 }
 </script>
 

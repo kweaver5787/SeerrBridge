@@ -69,6 +69,8 @@ async def process_tv_show_seasons(media_title: str, requested_seasons: List[str]
                 discrepant_shows = set()
         else:
             # Initialize the file if it doesn't exist
+            # Ensure the logs directory exists first
+            os.makedirs(os.path.dirname(DISCREPANCY_REPO_FILE), exist_ok=True)
             with open(DISCREPANCY_REPO_FILE, 'w', encoding='utf-8') as f:
                 json.dump({"discrepancies": []}, f)
             logger.info("Webhook: Initialized new episode_discrepancies.json file")
@@ -155,6 +157,8 @@ async def process_tv_show_seasons(media_title: str, requested_seasons: List[str]
                     }
                     
                     # Load current discrepancies and add new one
+                    # Ensure the logs directory exists first
+                    os.makedirs(os.path.dirname(DISCREPANCY_REPO_FILE), exist_ok=True)
                     with open(DISCREPANCY_REPO_FILE, 'r', encoding='utf-8') as f:
                         repo_data = json.load(f)
                     repo_data["discrepancies"].append(discrepancy_entry)

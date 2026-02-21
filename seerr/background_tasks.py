@@ -163,38 +163,96 @@ async def check_config_changes():
         should_refresh = False
         
         # Check if scheduler is enabled
-        if not task_config.get_config('scheduler_enabled', True):
+        scheduler_enabled = task_config.get_config('scheduler_enabled', True)
+        
+        if not scheduler_enabled:
+            # If scheduler is disabled, only refresh if there are still jobs running
             if current_jobs:
                 should_refresh = True
+                log_info("Config Refresh", "Scheduler disabled but jobs still exist, refreshing to clear them", 
+                        module="background_tasks", function="check_config_changes")
         else:
-            # Check if token refresh interval changed
+            # Scheduler is enabled - check each task individually
+            # Only refresh if intervals have ACTUALLY changed or required jobs are missing
+            
+            # 1. Check token refresh - should always exist if scheduler is enabled
             token_interval = float(task_config.get_config('token_refresh_interval_minutes', 10))
-            if 'token_refresh' in current_jobs:
-                if abs(current_jobs['token_refresh'].trigger.interval.total_seconds() / 60 - token_interval) > 0.1:
-                    should_refresh = True
-            elif task_config.get_config('scheduler_enabled', True):
+            if 'token_refresh' not in current_jobs:
                 should_refresh = True
+                log_info("Config Refresh", "Token refresh job missing, will refresh", 
+                        module="background_tasks", function="check_config_changes")
+            elif abs(current_jobs['token_refresh'].trigger.interval.total_seconds() / 60 - token_interval) > 0.1:
+                should_refresh = True
+                log_info("Config Refresh", f"Token refresh interval changed: {current_jobs['token_refresh'].trigger.interval.total_seconds() / 60} -> {token_interval}", 
+                        module="background_tasks", function="check_config_changes")
             
-            # Check if movie processing check interval changed
-            movie_interval = float(task_config.get_config('movie_processing_check_interval_minutes', 15))
-            if 'movie_processing_checks' in current_jobs:
-                if abs(current_jobs['movie_processing_checks'].trigger.interval.total_seconds() / 60 - movie_interval) > 0.1:
+            # 2. Check movie processing checks - only if enabled
+            enable_movie_processing = task_config.get_config('enable_automatic_background_task', False)
+            if enable_movie_processing:
+                movie_interval = float(task_config.get_config('movie_processing_check_interval_minutes', 15))
+                if 'movie_processing_checks' not in current_jobs:
                     should_refresh = True
-            elif task_config.get_config('enable_automatic_background_task', False):
-                should_refresh = True
+                    log_info("Config Refresh", "Movie processing checks enabled but job missing, will refresh", 
+                            module="background_tasks", function="check_config_changes")
+                elif abs(current_jobs['movie_processing_checks'].trigger.interval.total_seconds() / 60 - movie_interval) > 0.1:
+                    should_refresh = True
+                    log_info("Config Refresh", f"Movie processing check interval changed: {current_jobs['movie_processing_checks'].trigger.interval.total_seconds() / 60} -> {movie_interval}", 
+                            module="background_tasks", function="check_config_changes")
+            else:
+                # If disabled, job should not exist
+                if 'movie_processing_checks' in current_jobs:
+                    should_refresh = True
+                    log_info("Config Refresh", "Movie processing checks disabled but job still exists, will refresh", 
+                            module="background_tasks", function="check_config_changes")
             
-            # Check if movie requests recheck interval changed
-            refresh_interval = float(task_config.get_config('refresh_interval_minutes', 60.0))
-            if 'process_movie_requests' in current_jobs:
-                if abs(current_jobs['process_movie_requests'].trigger.interval.total_seconds() / 60 - refresh_interval) > 0.1:
+            # 3. Check movie requests recheck - only if background tasks enabled
+            background_tasks_enabled = task_config.get_config('background_tasks_enabled', True)
+            if background_tasks_enabled:
+                refresh_interval = float(task_config.get_config('refresh_interval_minutes', 60.0))
+                if 'process_movie_requests' not in current_jobs:
                     should_refresh = True
-            elif task_config.get_config('background_tasks_enabled', True):
+                    log_info("Config Refresh", "Movie requests recheck enabled but job missing, will refresh", 
+                            module="background_tasks", function="check_config_changes")
+                elif abs(current_jobs['process_movie_requests'].trigger.interval.total_seconds() / 60 - refresh_interval) > 0.1:
+                    should_refresh = True
+                    log_info("Config Refresh", f"Movie requests recheck interval changed: {current_jobs['process_movie_requests'].trigger.interval.total_seconds() / 60} -> {refresh_interval}", 
+                            module="background_tasks", function="check_config_changes")
+            else:
+                # If disabled, job should not exist
+                if 'process_movie_requests' in current_jobs:
+                    should_refresh = True
+                    log_info("Config Refresh", "Background tasks disabled but movie requests job still exists, will refresh", 
+                            module="background_tasks", function="check_config_changes")
+            
+            # 4. Check availability check for failed items - should always exist if scheduler is enabled
+            availability_interval = 30.0  # Fixed at 30 minutes
+            if 'check_failed_items_availability' not in current_jobs:
                 should_refresh = True
+                log_info("Config Refresh", "Availability check job missing, will refresh", 
+                        module="background_tasks", function="check_config_changes")
+            elif abs(current_jobs['check_failed_items_availability'].trigger.interval.total_seconds() / 60 - availability_interval) > 0.1:
+                should_refresh = True
+                log_info("Config Refresh", f"Availability check interval changed: {current_jobs['check_failed_items_availability'].trigger.interval.total_seconds() / 60} -> {availability_interval}", 
+                        module="background_tasks", function="check_config_changes")
+            
+            # 5. Check queue reconciliation - should always exist if scheduler is enabled
+            reconcile_interval = 2.0  # Fixed at 2 minutes
+            if 'reconcile_queues_periodically' not in current_jobs:
+                should_refresh = True
+                log_info("Config Refresh", "Queue reconciliation job missing, will refresh", 
+                        module="background_tasks", function="check_config_changes")
+            elif abs(current_jobs['reconcile_queues_periodically'].trigger.interval.total_seconds() / 60 - reconcile_interval) > 0.1:
+                should_refresh = True
+                log_info("Config Refresh", f"Queue reconciliation interval changed: {current_jobs['reconcile_queues_periodically'].trigger.interval.total_seconds() / 60} -> {reconcile_interval}", 
+                        module="background_tasks", function="check_config_changes")
         
         if should_refresh:
             log_info("Config Refresh", "Configuration changes detected, refreshing scheduled tasks", 
                     module="background_tasks", function="check_config_changes")
             await refresh_all_scheduled_tasks()
+        else:
+            log_debug("Config Refresh", "No configuration changes detected, skipping refresh", 
+                     module="background_tasks", function="check_config_changes")
             
     except Exception as e:
         log_error("Config Refresh Error", f"Error checking configuration changes: {e}", 
@@ -232,6 +290,17 @@ async def refresh_all_scheduled_tasks():
         replace_existing=True
     )
     log_info("Scheduler", "Scheduled queue reconciliation every 2 minutes", module="background_tasks", function="refresh_all_scheduled_tasks")
+    
+    # Schedule availability check for failed items (every 30 minutes)
+    scheduler.add_job(
+        check_failed_items_availability,
+        'interval',
+        minutes=30,
+        id='check_failed_items_availability',
+        replace_existing=True,
+        max_instances=1
+    )
+    log_info("Scheduler", "Scheduled availability check for failed items every 30 minutes", module="background_tasks", function="refresh_all_scheduled_tasks")
     
     log_info("Scheduler", "Refreshed all scheduled tasks from database configuration", module="background_tasks", function="refresh_all_scheduled_tasks")
 
@@ -307,7 +376,14 @@ def schedule_token_refresh():
         return
     
     interval = int(task_config.get_config('token_refresh_interval_minutes', 10))
-    scheduler.add_job(check_and_refresh_access_token, 'interval', minutes=interval)
+    scheduler.add_job(
+        check_and_refresh_access_token,
+        'interval',
+        minutes=interval,
+        id='token_refresh',
+        replace_existing=True,
+        max_instances=1
+    )
     log_info("Token Management", f"Scheduled token refresh every {interval} minutes.", module="background_tasks", function="schedule_token_refresh")
 
 def schedule_movie_processing_checks():
@@ -4110,4 +4186,93 @@ def is_safe_to_refresh_library_stats(min_idle_seconds=30):
 #                    f"Processing inactive: {processing_inactive}, "
 #                    f"Time since last activity: {time_since_last_activity:.1f}s (need {min_idle_seconds}s)")
     
-    return is_safe 
+    return is_safe
+
+async def check_failed_items_availability():
+    """
+    Periodically check if failed items are now available in Seerr
+    and automatically mark them as complete if they are.
+    """
+    if not USE_DATABASE:
+        return
+    
+    try:
+        from seerr.overseerr import check_media_availability, mark_completed
+        from seerr.unified_media_manager import update_media_processing_status
+        from seerr.unified_models import UnifiedMedia
+        from seerr.database import get_db
+        
+        log_info("Availability Check", "Starting availability check for failed items", 
+                module="background_tasks", function="check_failed_items_availability")
+        
+        # Get ALL failed items directly (not filtered by retry eligibility)
+        # The availability check should check all failed items, not just those ready for retry
+        db = get_db()
+        try:
+            # Get all failed movies
+            failed_movies = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'movie',
+                UnifiedMedia.status == 'failed'
+            ).limit(100).all()
+            
+            # Get all failed TV shows
+            failed_tv = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'tv',
+                UnifiedMedia.status == 'failed'
+            ).limit(100).all()
+            
+            all_failed = failed_movies + failed_tv
+        finally:
+            db.close()
+        log_info("Availability Check", f"Checking {len(all_failed)} failed items for availability", 
+                module="background_tasks", function="check_failed_items_availability")
+        
+        marked_complete = 0
+        
+        for media in all_failed:
+            try:
+                # Check if media is available in Seerr
+                availability = check_media_availability(media.tmdb_id, media.media_type)
+                
+                if availability and availability.get('available'):
+                    # Media is now available in Seerr - mark as complete
+                    media_id = availability.get('media_id')
+                    
+                    if media_id:
+                        # Mark as available in Seerr (if not already)
+                        if mark_completed(media_id, media.tmdb_id):
+                            log_info("Availability Check", 
+                                    f"Marked {media.title} (TMDB: {media.tmdb_id}) as available in Seerr", 
+                                    module="background_tasks", function="check_failed_items_availability")
+                        
+                        # Update database status to completed
+                        update_media_processing_status(
+                            media.id,
+                            'completed',
+                            'auto_completed_from_seerr',
+                            extra_data={
+                                'completed_at': datetime.utcnow().isoformat(),
+                                'overseerr_media_id': media_id,
+                                'auto_detected': True
+                            }
+                        )
+                        
+                        marked_complete += 1
+                        log_success("Availability Check", 
+                                   f"Auto-marked {media.title} as complete (was available in Seerr)", 
+                                   module="background_tasks", function="check_failed_items_availability")
+                
+            except Exception as e:
+                log_error("Availability Check", 
+                         f"Error checking availability for {media.title}: {e}", 
+                         module="background_tasks", function="check_failed_items_availability")
+                continue
+        
+        if marked_complete > 0:
+            log_success("Availability Check", 
+                       f"Auto-marked {marked_complete} failed item(s) as complete", 
+                       module="background_tasks", function="check_failed_items_availability")
+        
+    except Exception as e:
+        log_error("Availability Check", f"Error in availability check task: {e}", 
+                 module="background_tasks", function="check_failed_items_availability") 

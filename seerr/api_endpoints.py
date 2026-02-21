@@ -150,6 +150,21 @@ async def retry_failed_items():
         log_error("API Error", f"Error retrying failed items: {e}", module="api_endpoints", function="retry_failed_items")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/failed-items/check-availability")
+async def check_failed_items_availability_manual():
+    """Manually trigger availability check for failed items"""
+    try:
+        from seerr.background_tasks import check_failed_items_availability
+        await check_failed_items_availability()
+        return {
+            "success": True,
+            "message": "Availability check completed"
+        }
+    except Exception as e:
+        log_error("API Error", f"Error checking failed items availability: {e}", 
+                 module="api_endpoints", function="check_failed_items_availability_manual")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/config")
 async def get_config():
     """Get all configuration values with proper masking for sensitive data"""
@@ -964,6 +979,252 @@ async def delete_trakt_list_endpoint(list_id: int):
         raise
     except Exception as e:
         log_error("API Error", f"Error deleting Trakt list: {e}", module="api_endpoints", function="delete_trakt_list_endpoint")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/tv-subscriptions/subscribe")
+async def subscribe_to_show(request: Request):
+    """Subscribe to a TV show, marking existing seasons as completed"""
+    try:
+        data = await request.json()
+        tmdb_id = data.get('tmdb_id')
+        mark_existing_completed = data.get('mark_existing_completed', True)
+        
+        if not tmdb_id:
+            raise HTTPException(status_code=400, detail="TMDB ID is required")
+        
+        from seerr.unified_media_manager import subscribe_to_existing_show
+        
+        media_id = subscribe_to_existing_show(int(tmdb_id), mark_existing_completed)
+        
+        if not media_id:
+            raise HTTPException(status_code=500, detail="Failed to subscribe to show")
+        
+        return {
+            "success": True,
+            "message": "Successfully subscribed to show",
+            "media_id": media_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("API Error", f"Error subscribing to show: {e}", module="api_endpoints", function="subscribe_to_show")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/media/{media_id}/refresh-trakt")
+async def refresh_media_from_trakt_endpoint(media_id: int, request: Request):
+    """Refresh media metadata and images from Trakt API without changing status"""
+    try:
+        data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        force_image_refresh = data.get('force_image_refresh', False)
+        
+        from seerr.unified_media_manager import refresh_media_from_trakt, get_media_by_id
+        
+        # Verify media exists
+        media = get_media_by_id(media_id)
+        if not media:
+            raise HTTPException(status_code=404, detail="Media not found")
+        
+        success = refresh_media_from_trakt(media_id, force_image_refresh)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to refresh media from Trakt")
+        
+        return {
+            "success": True,
+            "message": f"Successfully refreshed Trakt data for {media.title}",
+            "media_id": media_id
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("API Error", f"Error refreshing media from Trakt: {e}", module="api_endpoints", function="refresh_media_from_trakt_endpoint")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/media/{media_id}/mark-complete")
+async def mark_media_complete_endpoint(media_id: int, request: Request):
+    """
+    Manually mark a media item as complete.
+    This is useful when the user has manually added media to their library.
+    
+    For TV shows, supports granular marking:
+    - Mark entire show: {} or {"season_number": null, "episode_numbers": null}
+    - Mark entire season: {"season_number": 1}
+    - Mark specific episodes: {"season_number": 1, "episode_numbers": [9, 10]}
+    """
+    try:
+        from seerr.unified_media_manager import get_media_by_id, update_media_processing_status, mark_episodes_complete
+        from seerr.overseerr import check_media_availability, mark_completed
+        from datetime import datetime
+        
+        # Get media record
+        media_record = get_media_by_id(media_id)
+        if not media_record:
+            raise HTTPException(status_code=404, detail="Media record not found")
+        
+        # Get request data
+        data = await request.json() if request.headers.get("content-type") == "application/json" else {}
+        check_seerr = data.get('check_seerr', True)
+        season_number = data.get('season_number')
+        episode_numbers = data.get('episode_numbers')
+        
+        # For TV shows, use granular episode marking
+        if media_record.media_type == 'tv' and (season_number is not None or episode_numbers is not None):
+            result = mark_episodes_complete(
+                media_id=media_id,
+                season_number=season_number,
+                episode_numbers=episode_numbers,
+                check_seerr=check_seerr
+            )
+            
+            if not result.get('success'):
+                raise HTTPException(status_code=400, detail=result.get('message', 'Failed to mark episodes as complete'))
+            
+            return result
+        
+        # For movies or TV shows marked as complete without season/episode specifiers
+        # Use the original behavior (mark entire media as complete)
+        if check_seerr:
+            availability = check_media_availability(media_record.tmdb_id, media_record.media_type)
+            if availability and availability.get('available'):
+                # Mark as available in Seerr too
+                seerr_media_id = availability.get('media_id')
+                if seerr_media_id:
+                    mark_completed(seerr_media_id, media_record.tmdb_id)
+        
+        # Update database status to completed
+        update_media_processing_status(
+            media_record.id,
+            'completed',
+            'manually_marked_complete',
+            extra_data={
+                'completed_at': datetime.utcnow().isoformat(),
+                'manually_marked': True,
+                'checked_seerr': check_seerr
+            }
+        )
+        
+        return {
+            "success": True,
+            "message": f"Successfully marked {media_record.title} as complete",
+            "media_id": media_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error("API Error", f"Error marking media {media_id} as complete: {e}", 
+                 module="api_endpoints", function="mark_media_complete_endpoint")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/processing/current")
+async def get_currently_processing():
+    """Get the currently processing media item"""
+    try:
+        from seerr.database import get_db
+        from seerr.unified_models import UnifiedMedia
+        
+        db = get_db()
+        try:
+            # Get the most recently started processing item
+            processing_item = db.query(UnifiedMedia).filter(
+                UnifiedMedia.status == 'processing',
+                UnifiedMedia.is_in_queue == True
+            ).order_by(
+                UnifiedMedia.processing_started_at.desc()
+            ).first()
+            
+            if not processing_item:
+                return {
+                    "success": True,
+                    "processing": False,
+                    "message": "No items currently processing"
+                }
+            
+            return {
+                "success": True,
+                "processing": True,
+                "media": {
+                    "id": processing_item.id,
+                    "tmdb_id": processing_item.tmdb_id,
+                    "title": processing_item.title,
+                    "media_type": processing_item.media_type,
+                    "processing_stage": processing_item.processing_stage,
+                    "processing_started_at": processing_item.processing_started_at.isoformat() if processing_item.processing_started_at else None
+                }
+            }
+        finally:
+            db.close()
+            
+    except Exception as e:
+        log_error("API Error", f"Error getting currently processing item: {e}", 
+                 module="api_endpoints", function="get_currently_processing")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/processing/stop")
+async def stop_current_processing():
+    """Stop the currently processing item and mark it as failed"""
+    try:
+        from seerr.database import get_db
+        from seerr.unified_models import UnifiedMedia
+        from seerr.unified_media_manager import update_media_processing_status
+        from seerr.background_tasks import cancellation_registry
+        from datetime import datetime
+        
+        db = get_db()
+        try:
+            # Get the most recently started processing item
+            processing_item = db.query(UnifiedMedia).filter(
+                UnifiedMedia.status == 'processing',
+                UnifiedMedia.is_in_queue == True
+            ).order_by(
+                UnifiedMedia.processing_started_at.desc()
+            ).first()
+            
+            if not processing_item:
+                return {
+                    "success": False,
+                    "message": "No items currently processing"
+                }
+            
+            # Add to cancellation registry
+            if processing_item.tmdb_id:
+                cancellation_registry[(processing_item.tmdb_id, processing_item.media_type)] = {
+                    'media_type': processing_item.media_type,
+                    'cancelled_at': datetime.utcnow()
+                }
+            
+            # Mark as failed with cancelled stage
+            update_media_processing_status(
+                processing_item.id,
+                'failed',
+                'cancelled',
+                error_message='Processing stopped by user',
+                extra_data={
+                    'cancelled_at': datetime.utcnow().isoformat(),
+                    'cancelled_by': 'user',
+                    'stopped_processing': True
+                }
+            )
+            
+            # Remove from queue
+            processing_item.is_in_queue = False
+            db.commit()
+            
+            log_info("Processing Stop", f"Stopped processing for {processing_item.title} (ID: {processing_item.id})", 
+                    module="api_endpoints", function="stop_current_processing")
+            
+            return {
+                "success": True,
+                "message": f"Stopped processing for {processing_item.title}",
+                "media_id": processing_item.id,
+                "title": processing_item.title
+            }
+        finally:
+            db.close()
+            
+    except Exception as e:
+        log_error("API Error", f"Error stopping current processing: {e}", 
+                 module="api_endpoints", function="stop_current_processing")
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":

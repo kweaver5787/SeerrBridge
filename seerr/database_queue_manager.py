@@ -73,11 +73,23 @@ class DatabaseQueueManager:
             ).all()
             
             # Get items that are failed and eligible for retry
-            failed_items = db.query(UnifiedMedia).filter(
+            # Refresh config to get latest max_retry_attempts value
+            from seerr.task_config_manager import task_config
+            max_retry_attempts = task_config.get_config('failed_item_max_retry_attempts', 3)
+            try:
+                max_retry_attempts = int(max_retry_attempts) if max_retry_attempts is not None else 3
+            except (ValueError, TypeError):
+                max_retry_attempts = 3
+            
+            query = db.query(UnifiedMedia).filter(
                 UnifiedMedia.status == 'failed',
-                UnifiedMedia.is_in_queue == False,
-                UnifiedMedia.error_count < self.max_retry_attempts
-            ).all()
+                UnifiedMedia.is_in_queue == False
+            )
+            # Only filter by max_retry_attempts if it's a positive number (infinite retries if 0 or negative)
+            if max_retry_attempts > 0:
+                query = query.filter(UnifiedMedia.error_count < max_retry_attempts)
+            
+            failed_items = query.all()
             
             # Filter failed items by retry timing
             eligible_failed_items = []

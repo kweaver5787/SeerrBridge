@@ -197,6 +197,37 @@ class MigrationRunner:
                 else:
                     logger.info("sync_count column already exists in trakt_lists table")
             
+            # Fix image column types to LONGBLOB if they're not already
+            if self.inspector.has_table('unified_media'):
+                image_columns = ['poster_image', 'thumb_image', 'fanart_image', 'backdrop_image']
+                for column_name in image_columns:
+                    try:
+                        # Check current column type
+                        check_sql = text("""
+                            SELECT COLUMN_TYPE 
+                            FROM INFORMATION_SCHEMA.COLUMNS 
+                            WHERE TABLE_SCHEMA = DATABASE() 
+                            AND TABLE_NAME = 'unified_media' 
+                            AND COLUMN_NAME = :column_name
+                        """)
+                        result = self.db.execute(check_sql, {'column_name': column_name}).fetchone()
+                        
+                        if result and result[0]:
+                            current_type = result[0].decode() if isinstance(result[0], bytes) else str(result[0])
+                            # Check if it's not already LONGBLOB
+                            if 'LONGBLOB' not in current_type.upper():
+                                logger.info(f"Converting {column_name} from {current_type} to LONGBLOB")
+                                alter_sql = text(f"""
+                                    ALTER TABLE unified_media 
+                                    MODIFY COLUMN {column_name} LONGBLOB NULL
+                                """)
+                                self.db.execute(alter_sql)
+                                logger.success(f"Successfully converted {column_name} to LONGBLOB")
+                            else:
+                                logger.debug(f"{column_name} is already LONGBLOB")
+                    except Exception as e:
+                        logger.warning(f"Could not check/alter {column_name} column type: {e}")
+            
             self.db.commit()
             logger.info("Database migration completed successfully")
             

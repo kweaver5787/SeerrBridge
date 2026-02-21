@@ -4,7 +4,7 @@ Handles fetching media information from Trakt
 """
 import time
 import requests
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 from datetime import datetime, timezone
 from loguru import logger
 
@@ -368,6 +368,59 @@ def get_season_details_from_trakt(trakt_show_id: str, season_number: int) -> Opt
             return None
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching season details from Trakt API for show ID {trakt_show_id}, season {season_number}: {e}")
+        return None
+
+def get_all_seasons_from_trakt(trakt_show_id: str) -> Optional[List[dict]]:
+    """
+    Fetch all seasons for a TV show from Trakt API
+    
+    Args:
+        trakt_show_id (str): The Trakt ID of the show
+        
+    Returns:
+        Optional[List[dict]]: List of season dictionaries if successful, None if failed
+    """
+    global trakt_api_calls, last_reset_time
+    
+    if not trakt_show_id or not isinstance(trakt_show_id, str):
+        logger.error(f"Invalid trakt_show_id provided: {trakt_show_id}")
+        return None
+    
+    current_time = time.time()
+    if current_time - last_reset_time >= TRAKT_RATE_LIMIT_PERIOD:
+        trakt_api_calls = 0
+        last_reset_time = current_time
+    
+    if trakt_api_calls >= TRAKT_RATE_LIMIT:
+        logger.warning("Trakt API rate limit reached. Waiting for the next period.")
+        time.sleep(TRAKT_RATE_LIMIT_PERIOD - (current_time - last_reset_time))
+        trakt_api_calls = 0
+        last_reset_time = time.time()
+    
+    url = f"https://api.trakt.tv/shows/{trakt_show_id}/seasons?extended=episodes"
+    headers = {
+        "Content-type": "application/json",
+        "trakt-api-key": TRAKT_API_KEY,
+        "trakt-api-version": "2"
+    }
+    
+    try:
+        logger.info(f"Fetching all seasons for show ID {trakt_show_id}")
+        response = requests.get(url, headers=headers, timeout=10)
+        trakt_api_calls += 1
+        
+        if response.status_code == 200:
+            data = response.json()
+            # Filter out season 0 (specials) and return seasons sorted by number
+            seasons = [s for s in data if s.get('number', 0) > 0]
+            seasons.sort(key=lambda x: x.get('number', 0))
+            logger.info(f"Successfully fetched {len(seasons)} seasons for show ID {trakt_show_id}")
+            return seasons
+        else:
+            logger.error(f"Trakt API seasons request failed with status code {response.status_code}")
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Error fetching seasons from Trakt API for show ID {trakt_show_id}: {e}")
         return None
 
 def check_next_episode_aired(trakt_show_id: str, season_number: int, current_aired_episodes: int) -> Tuple[bool, Optional[dict]]:

@@ -36,6 +36,7 @@ class FailedItemManager:
         
         # Defensive type conversion to ensure numeric types (handles cases where config returns strings)
         try:
+            # Allow 0 or negative for infinite retries
             self.max_retry_attempts = int(max_retry_attempts) if max_retry_attempts is not None else 3
         except (ValueError, TypeError):
             self.max_retry_attempts = 3
@@ -63,12 +64,17 @@ class FailedItemManager:
         db = get_db()
         try:
             # Get movies that have failed and haven't exceeded retry limits
-            failed_movies = db.query(UnifiedMedia).filter(
+            # If max_retry_attempts is 0 or negative, allow infinite retries
+            query = db.query(UnifiedMedia).filter(
                 UnifiedMedia.media_type == 'movie',
                 UnifiedMedia.status == 'failed',
-                UnifiedMedia.error_count < self.max_retry_attempts,
                 UnifiedMedia.last_error_at.isnot(None)
-            ).order_by(UnifiedMedia.last_error_at.asc()).limit(limit).all()
+            )
+            # Only filter by max_retry_attempts if it's a positive number (infinite retries if 0 or negative)
+            if self.max_retry_attempts > 0:
+                query = query.filter(UnifiedMedia.error_count < self.max_retry_attempts)
+            
+            failed_movies = query.order_by(UnifiedMedia.last_error_at.asc()).limit(limit).all()
             
             # Filter by retry delay
             eligible_movies = []
@@ -91,12 +97,17 @@ class FailedItemManager:
         db = get_db()
         try:
             # Get TV shows that have failed and haven't exceeded retry limits
-            failed_shows = db.query(UnifiedMedia).filter(
+            # If max_retry_attempts is 0 or negative, allow infinite retries
+            query = db.query(UnifiedMedia).filter(
                 UnifiedMedia.media_type == 'tv',
                 UnifiedMedia.status == 'failed',
-                UnifiedMedia.error_count < self.max_retry_attempts,
                 UnifiedMedia.last_error_at.isnot(None)
-            ).order_by(UnifiedMedia.last_error_at.asc()).limit(limit).all()
+            )
+            # Only filter by max_retry_attempts if it's a positive number (infinite retries if 0 or negative)
+            if self.max_retry_attempts > 0:
+                query = query.filter(UnifiedMedia.error_count < self.max_retry_attempts)
+            
+            failed_shows = query.order_by(UnifiedMedia.last_error_at.asc()).limit(limit).all()
             
             # Filter by retry delay
             eligible_shows = []
@@ -292,6 +303,10 @@ failed_item_manager = FailedItemManager()
 async def process_failed_items():
     """Process failed items by retrying eligible ones"""
     try:
+        from seerr.overseerr import check_media_availability, mark_completed
+        from seerr.unified_media_manager import update_media_processing_status
+        from datetime import datetime
+        
         log_info("Failed Item Processing", "Starting failed item processing", 
                 module="failed_item_manager", function="process_failed_items")
         
@@ -300,21 +315,95 @@ async def process_failed_items():
         failed_tv_shows = failed_item_manager.get_failed_tv_shows(limit=10)
         
         retry_count = 0
+        marked_complete_count = 0
         
-        # Retry failed movies
+        # Check Seerr availability and retry failed movies
         for movie in failed_movies:
+            # First check if it's available in Seerr
+            availability = check_media_availability(movie.tmdb_id, movie.media_type)
+            
+            if availability and availability.get('available'):
+                # Media is available in Seerr - mark as complete instead of retrying
+                media_id = availability.get('media_id')
+                
+                if media_id:
+                    # Mark as available in Seerr (if not already)
+                    if mark_completed(media_id, movie.tmdb_id):
+                        log_info("Failed Item Processing", 
+                                f"Marked {movie.title} (TMDB: {movie.tmdb_id}) as available in Seerr", 
+                                module="failed_item_manager", function="process_failed_items")
+                    
+                    # Update database status to completed
+                    update_media_processing_status(
+                        movie.id,
+                        'completed',
+                        'auto_completed_from_seerr',
+                        extra_data={
+                            'completed_at': datetime.utcnow().isoformat(),
+                            'overseerr_media_id': media_id,
+                            'auto_detected': True,
+                            'detected_during_retry': True
+                        }
+                    )
+                    
+                    marked_complete_count += 1
+                    log_success("Failed Item Processing", 
+                               f"Auto-marked {movie.title} as complete (was available in Seerr, detected during retry)", 
+                               module="failed_item_manager", function="process_failed_items")
+                    continue  # Skip retry, already marked complete
+            
+            # Not available in Seerr, proceed with normal retry
             if failed_item_manager.retry_failed_movie(movie):
                 retry_count += 1
         
-        # Retry failed TV shows
+        # Check Seerr availability and retry failed TV shows
         for show in failed_tv_shows:
+            # First check if it's available in Seerr
+            availability = check_media_availability(show.tmdb_id, show.media_type)
+            
+            if availability and availability.get('available'):
+                # Media is available in Seerr - mark as complete instead of retrying
+                media_id = availability.get('media_id')
+                
+                if media_id:
+                    # Mark as available in Seerr (if not already)
+                    if mark_completed(media_id, show.tmdb_id):
+                        log_info("Failed Item Processing", 
+                                f"Marked {show.title} (TMDB: {show.tmdb_id}) as available in Seerr", 
+                                module="failed_item_manager", function="process_failed_items")
+                    
+                    # Update database status to completed
+                    update_media_processing_status(
+                        show.id,
+                        'completed',
+                        'auto_completed_from_seerr',
+                        extra_data={
+                            'completed_at': datetime.utcnow().isoformat(),
+                            'overseerr_media_id': media_id,
+                            'auto_detected': True,
+                            'detected_during_retry': True
+                        }
+                    )
+                    
+                    marked_complete_count += 1
+                    log_success("Failed Item Processing", 
+                               f"Auto-marked {show.title} as complete (was available in Seerr, detected during retry)", 
+                               module="failed_item_manager", function="process_failed_items")
+                    continue  # Skip retry, already marked complete
+            
+            # Not available in Seerr, proceed with normal retry
             if failed_item_manager.retry_failed_tv_show(show):
                 retry_count += 1
+        
+        if marked_complete_count > 0:
+            log_success("Failed Item Processing", 
+                       f"Auto-marked {marked_complete_count} failed item(s) as complete (available in Seerr)", 
+                       module="failed_item_manager", function="process_failed_items")
         
         if retry_count > 0:
             log_success("Failed Item Processing", f"Successfully re-queued {retry_count} failed items", 
                        module="failed_item_manager", function="process_failed_items")
-        else:
+        elif marked_complete_count == 0:
             log_info("Failed Item Processing", "No failed items eligible for retry", 
                     module="failed_item_manager", function="process_failed_items")
         
