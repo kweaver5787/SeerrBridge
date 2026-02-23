@@ -74,15 +74,14 @@ export default defineEventHandler(async (event) => {
     const webhookUrl = `${seerrbridgeUrl}/jellyseer-webhook/`
     
     try {
-      // Extract request details from Overseerr response
-      // Overseerr API typically returns the request object directly
-      const requestId = data.id || data.request?.id || data.requestId
-      const mediaInfo = data.media || data.request?.media
-      const requestInfo = data.request || data
-      
-      // If we don't have complete info, try to fetch the request details
+      // Extract request details from Overseerr/Jellyseerr response (handle multiple response shapes)
+      let requestId = data.id ?? data.request?.id ?? data.requestId ?? data.data?.id ?? data.data?.request?.id
+      let mediaInfo = data.media ?? data.request?.media ?? data.data?.media ?? data.data?.request?.media
+      let requestInfo = data.request ?? data.data?.request ?? data
+
+      // If we don't have complete info, try to fetch the request details by id
       let fullRequestData = data
-      if (requestId && (!mediaInfo || !requestInfo.requestedBy)) {
+      if (requestId && (!mediaInfo || !requestInfo?.requestedBy)) {
         try {
           const requestDetailsResponse = await fetch(`${baseUrl}/api/v1/request/${requestId}`, {
             headers: {
@@ -96,11 +95,37 @@ export default defineEventHandler(async (event) => {
           console.warn('Could not fetch request details, using response data:', fetchError)
         }
       }
-      
+
       // Use full request data if available
-      const finalMediaInfo = fullRequestData.media || mediaInfo
-      const finalRequestInfo = fullRequestData.request || fullRequestData
-      
+      let finalMediaInfo = fullRequestData.media ?? fullRequestData.request?.media ?? mediaInfo
+      let finalRequestInfo = fullRequestData.request ?? fullRequestData
+
+      // Fallback: when adding a season to an existing show, response may lack id/media — fetch requests and find by mediaId
+      if ((!requestId || !finalMediaInfo) && mediaId) {
+        try {
+          const listResponse = await fetch(`${baseUrl}/api/v1/request?take=500&filter=all&sort=added`, {
+            headers: { 'X-Api-Key': overseerrApiKey }
+          })
+          if (listResponse.ok) {
+            const listData = await listResponse.json()
+            const results = listData.results ?? listData ?? []
+            const requests = Array.isArray(results) ? results : []
+            const match = requests.find((r: any) => {
+              const m = r.media ?? r
+              const tid = m.tmdbId ?? m.tmdb_id
+              return Number(tid) === Number(mediaId)
+            })
+            if (match) {
+              requestId = requestId ?? match.id
+              finalMediaInfo = finalMediaInfo ?? match.media ?? match
+              finalRequestInfo = finalRequestInfo ?? match
+            }
+          }
+        } catch (fetchError) {
+          console.warn('Could not fetch request list for fallback:', fetchError)
+        }
+      }
+
       if (requestId && finalMediaInfo) {
         // Construct webhook payload
         const webhookPayload = {

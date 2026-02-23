@@ -963,6 +963,9 @@ const handleImageError = (event: Event) => {
 const formatProcessingStage = (stage: string) => {
   if (!stage) return 'Processing...'
   
+  if (stage === 'trakt_pending') {
+    return 'Waiting for Trakt'
+  }
   if (stage.indexOf('browser_automation_season_') === 0) {
     return 'Processing Season'
   }

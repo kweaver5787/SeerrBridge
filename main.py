@@ -522,6 +522,45 @@ async def jellyseer_webhook(request: Request, background_tasks: BackgroundTasks)
         # Fetch media details from Trakt
         media_details = get_media_details_from_trakt(tmdb_id, media_type)
         if not media_details:
+            # Trakt failed (e.g. 403/404); create pending record and retry later via background job
+            from seerr.overseerr import get_media_id_from_request_id
+            from seerr.config import USE_DATABASE
+            media_id_early = get_media_id_from_request_id(request_id)
+            if media_id_early is None:
+                logger.error(f"Failed to get media_id for request_id {request_id}")
+                raise HTTPException(status_code=500, detail=f"Failed to fetch {media_type} details from Trakt")
+            if USE_DATABASE:
+                requested_seasons_webhook = []
+                if media_type == 'tv' and payload.extra:
+                    for item in payload.extra:
+                        if isinstance(item, dict) and 'requested_seasons' in item:
+                            sn = item['requested_seasons']
+                            if isinstance(sn, list):
+                                requested_seasons_webhook = [f"Season {s}" for s in sn]
+                                break
+                        if isinstance(item, dict) and item.get('name') == 'Requested Seasons':
+                            requested_seasons_webhook = item.get('value', '').split(', ')
+                            break
+                extra_for_pending = {}
+                if isinstance(payload.extra, dict):
+                    extra_for_pending = dict(payload.extra)
+                if media_type == 'tv' and requested_seasons_webhook:
+                    extra_for_pending['requested_seasons'] = requested_seasons_webhook
+                from seerr.unified_media_manager import create_or_update_trakt_pending_record
+                record = create_or_update_trakt_pending_record(
+                    tmdb_id=int(payload.media.tmdbId),
+                    media_type=media_type,
+                    overseerr_request_id=request_id,
+                    overseerr_media_id=media_id_early,
+                    requested_by=payload.request.requestedBy_username,
+                    extra_data=extra_for_pending or None,
+                )
+                if record:
+                    logger.info(f"Created/updated trakt_pending record for TMDB {tmdb_id}; will retry Trakt periodically")
+                    return {
+                        "status": "success",
+                        "message": "Request accepted; Trakt details pending and will be retried periodically.",
+                    }
             logger.error(f"Failed to fetch {media_type} details from Trakt")
             raise HTTPException(status_code=500, detail=f"Failed to fetch {media_type} details from Trakt")
 

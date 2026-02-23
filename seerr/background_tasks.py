@@ -301,6 +301,9 @@ async def refresh_all_scheduled_tasks():
     
     # Schedule subscription check (own interval, default once per day)
     schedule_subscription_check()
+
+    # Schedule Trakt pending retry (default every 8 hours)
+    schedule_trakt_pending_retry()
     
     # Schedule periodic queue reconciliation (every 2 minutes to drain cleared items)
     scheduler.add_job(
@@ -459,6 +462,104 @@ async def add_failed_item_processing_to_queue():
         log_info("Failed Item Processing", "Added failed item processing task to queue", module="background_tasks", function="add_failed_item_processing_to_queue")
     except Exception as e:
         log_error("Failed Item Processing", f"Error adding failed item processing to queue: {e}", module="background_tasks", function="add_failed_item_processing_to_queue")
+
+
+async def process_trakt_pending_items() -> int:
+    """
+    Find unified_media rows with processing_stage='trakt_pending', retry Trakt lookup,
+    and on success update record and add to queue. Returns count promoted.
+    """
+    if not USE_DATABASE:
+        return 0
+    from seerr.database import get_db
+    from seerr.unified_models import UnifiedMedia
+    from seerr.unified_media_manager import update_media_details
+
+    db = get_db()
+    try:
+        pending = db.query(UnifiedMedia).filter(
+            UnifiedMedia.processing_stage == 'trakt_pending',
+            UnifiedMedia.status == 'pending',
+        ).all()
+        if not pending:
+            return 0
+        log_info("Trakt Pending Retry", f"Found {len(pending)} item(s) pending Trakt lookup", module="background_tasks", function="process_trakt_pending_items")
+        promoted = 0
+        for record in pending:
+            try:
+                media_details = get_media_details_from_trakt(str(record.tmdb_id), record.media_type)
+                if not media_details:
+                    continue
+                media_title = f"{media_details['title']} ({media_details['year']})"
+                imdb_id = media_details.get('imdb_id', '')
+                trakt_id = media_details.get('trakt_id', '')
+                update_media_details(
+                    record.id,
+                    title=media_details['title'],
+                    year=media_details.get('year'),
+                    imdb_id=imdb_id,
+                    trakt_id=str(trakt_id) if trakt_id else None,
+                    status='processing',
+                    processing_stage='queue_processing',
+                    processing_started_at=datetime.utcnow(),
+                    overview=media_details.get('overview'),
+                    genres=media_details.get('genres'),
+                    runtime=media_details.get('runtime'),
+                    rating=media_details.get('rating'),
+                    vote_count=media_details.get('vote_count'),
+                    popularity=media_details.get('popularity'),
+                    poster_url=media_details.get('poster_url'),
+                    fanart_url=media_details.get('fanart_url'),
+                    backdrop_url=media_details.get('backdrop_url'),
+                    released_date=media_details.get('released_date'),
+                )
+                extra_data = record.extra_data if isinstance(record.extra_data, dict) else {}
+                media_id = record.overseerr_media_id or 0
+                request_id = record.overseerr_request_id
+                if record.media_type == 'movie':
+                    success = await add_movie_to_queue(
+                        imdb_id, media_title, 'movie', extra_data,
+                        media_id, record.tmdb_id, request_id,
+                    )
+                else:
+                    success = await add_tv_to_queue(
+                        imdb_id, media_title, 'tv', extra_data,
+                        media_id, record.tmdb_id, request_id,
+                    )
+                if success:
+                    promoted += 1
+                    log_success("Trakt Pending Retry", f"Promoted {media_title} to queue", module="background_tasks", function="process_trakt_pending_items")
+            except Exception as e:
+                log_error("Trakt Pending Retry", f"Error promoting TMDB {record.tmdb_id}: {e}", module="background_tasks", function="process_trakt_pending_items")
+        return promoted
+    finally:
+        db.close()
+
+
+async def add_trakt_pending_retry_to_queue():
+    """Enqueue one task to process trakt_pending items."""
+    try:
+        await movie_queue.put(("trakt_pending_retry",))
+        log_info("Trakt Pending Retry", "Added trakt_pending retry task to queue", module="background_tasks", function="add_trakt_pending_retry_to_queue")
+    except Exception as e:
+        log_error("Trakt Pending Retry", f"Error adding trakt_pending retry to queue: {e}", module="background_tasks", function="add_trakt_pending_retry_to_queue")
+
+
+def schedule_trakt_pending_retry():
+    """Schedule Trakt pending retry every N minutes (default 8 hours = 480)."""
+    if not task_config.get_config('background_tasks_enabled', True) or not task_config.get_config('scheduler_enabled', True):
+        return
+    interval = int(task_config.get_config('trakt_pending_retry_interval_minutes', 480))
+    scheduler.add_job(
+        add_trakt_pending_retry_to_queue,
+        'interval',
+        minutes=interval,
+        id='trakt_pending_retry',
+        replace_existing=True,
+        max_instances=1,
+    )
+    log_info("Trakt Pending Retry", f"Scheduled trakt_pending retry every {interval} minutes", module="background_tasks", function="schedule_trakt_pending_retry")
+
 
 def schedule_subscription_check():
     """Schedule subscription check on its own interval (default 1440 min = once per day)."""
@@ -626,6 +727,12 @@ async def process_movie_queue():
                 from seerr.failed_item_manager import process_failed_items
                 retry_count = await process_failed_items()
                 log_info("Failed Item Processing", f"Processed {retry_count} failed items for retry", module="background_tasks", function="process_movie_queue")
+                movie_queue.task_done()
+
+            elif isinstance(queue_item[0], str) and queue_item[0] == "trakt_pending_retry":
+                log_info("Trakt Pending Retry", "Processing trakt_pending retry task", module="background_tasks", function="process_movie_queue")
+                promoted = await process_trakt_pending_items()
+                log_info("Trakt Pending Retry", f"Promoted {promoted} trakt_pending item(s) to queue", module="background_tasks", function="process_movie_queue")
                 movie_queue.task_done()
                 
             else:

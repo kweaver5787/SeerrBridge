@@ -713,6 +713,79 @@ def start_media_processing(tmdb_id: int, imdb_id: str, trakt_id: str, media_type
         if 'db' in locals():
             db.close()
 
+
+def create_or_update_trakt_pending_record(
+    tmdb_id: int,
+    media_type: str,
+    overseerr_request_id: int,
+    overseerr_media_id: int,
+    requested_by: Optional[str] = None,
+    extra_data: Optional[Dict[str, Any]] = None,
+) -> Optional[UnifiedMedia]:
+    """
+    Create or update a unified_media row when Trakt lookup failed (403/404).
+    Record is left with processing_stage='trakt_pending' for background job to retry.
+    Prevents duplicates: one row per (tmdb_id, media_type).
+    """
+    try:
+        db = get_db()
+        existing = db.query(UnifiedMedia).filter(
+            UnifiedMedia.tmdb_id == tmdb_id,
+            UnifiedMedia.media_type == media_type,
+        ).first()
+
+        if existing:
+            if existing.trakt_id or existing.status in ('completed', 'processing', 'failed', 'unreleased'):
+                # Already past trakt_pending; only refresh request info
+                existing.overseerr_request_id = overseerr_request_id
+                existing.overseerr_media_id = overseerr_media_id
+                existing.requested_by = requested_by or existing.requested_by
+                existing.requested_at = datetime.utcnow()
+                existing.updated_at = datetime.utcnow()
+                db.commit()
+                return existing
+            # Existing record is pending / trakt_pending; update to latest request
+            existing.overseerr_request_id = overseerr_request_id
+            existing.overseerr_media_id = overseerr_media_id
+            existing.requested_by = requested_by or existing.requested_by
+            existing.requested_at = datetime.utcnow()
+            existing.extra_data = extra_data or existing.extra_data
+            existing.status = 'pending'
+            existing.processing_stage = 'trakt_pending'
+            existing.updated_at = datetime.utcnow()
+            db.commit()
+            log_info("Media Processing", f"Updated trakt_pending record for TMDB {tmdb_id}")
+            return existing
+
+        title_placeholder = f"Pending TMDB {tmdb_id}"
+        new_media = UnifiedMedia(
+            tmdb_id=tmdb_id,
+            media_type=media_type,
+            title=title_placeholder,
+            status='pending',
+            processing_stage='trakt_pending',
+            overseerr_request_id=overseerr_request_id,
+            overseerr_media_id=overseerr_media_id,
+            requested_by=requested_by,
+            requested_at=datetime.utcnow(),
+            extra_data=extra_data or {},
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(new_media)
+        db.commit()
+        log_info("Media Processing", f"Created trakt_pending record for TMDB {tmdb_id} ({media_type})")
+        return new_media
+    except Exception as e:
+        log_error("Database Error", f"Error creating/updating trakt_pending record: {e}")
+        if 'db' in locals():
+            db.rollback()
+        return None
+    finally:
+        if 'db' in locals():
+            db.close()
+
+
 def update_media_details(media_id: int, **kwargs) -> bool:
     """
     Update media details in the unified_media table

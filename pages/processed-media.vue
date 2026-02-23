@@ -907,7 +907,7 @@
                 
                 <div v-if="selectedMedia.processing_stage" class="flex items-center justify-between">
                   <span class="text-sm text-muted-foreground">Processing Stage</span>
-                  <span class="text-sm font-medium text-foreground">{{ selectedMedia.processing_stage }}</span>
+                  <span class="text-sm font-medium text-foreground">{{ selectedMedia.processing_stage === 'trakt_pending' ? 'Waiting for Trakt' : selectedMedia.processing_stage }}</span>
                 </div>
                 
                 <div v-if="selectedMedia.torrents_found" class="flex items-center justify-between">

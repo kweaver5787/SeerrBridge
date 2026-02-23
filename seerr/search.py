@@ -3157,6 +3157,24 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
             # Initialize a set to track confirmed seasons and processed torrents
             confirmed_seasons = set()
             processed_torrents = set()
+
+            # For movies only: set DMM filter to release year ±1 so wrong-year torrents don't appear
+            if not is_tv_show:
+                year = extract_year(movie_title)
+                if year is not None:
+                    try:
+                        year_regex = f"({year - 1}|{year}|{year + 1})"
+                        base = (TORRENT_FILTER_REGEX or "").strip()
+                        full_filter = f"{base} {year_regex}".strip() if base else year_regex
+                        filter_input = WebDriverWait(driver, 3).until(
+                            EC.presence_of_element_located((By.ID, "query"))
+                        )
+                        from seerr.background_tasks import type_slowly
+                        type_slowly(driver, filter_input, full_filter)
+                        logger.info(f"Applied movie year filter: {full_filter}")
+                        time.sleep(1)
+                    except (TimeoutException, NoSuchElementException) as e:
+                        logger.warning(f"Could not apply movie year filter: {e}")
             
             # Step 2: Check if any red buttons (RD 100%) exist and verify the title for each
             confirmation_flag, confirmed_seasons = check_red_buttons(driver, movie_title, normalized_seasons, confirmed_seasons, is_tv_show, processed_torrents=processed_torrents)

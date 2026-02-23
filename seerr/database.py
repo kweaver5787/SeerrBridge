@@ -338,9 +338,13 @@ def init_database():
     """Initialize database with default data"""
     db = get_db()
     try:
-        # Create tables
+        # Create tables (no-op if they already exist)
         create_tables()
-        
+
+        # Add any missing columns so existing DBs match current models after app updates
+        from seerr.schema_sync import sync_schema
+        sync_schema(engine, extra_metadata=[Base.metadata])
+
         # Insert default notification settings if none exist
         existing_settings = db.query(NotificationSettings).first()
         if not existing_settings:

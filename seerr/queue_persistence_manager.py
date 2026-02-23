@@ -194,10 +194,14 @@ class QueuePersistenceManager:
             
             queued_items = []
             for item in items:
+                # For movies, include year in title so worker gets "Title (Year)" for year-check logic
+                title = item.title
+                if queue_type == 'movie' and item.year is not None:
+                    title = f"{item.title} ({item.year})"
                 queued_items.append({
                     'id': item.id,
                     'imdb_id': item.imdb_id,
-                    'title': item.title,
+                    'title': title,
                     'media_type': item.media_type,
                     'tmdb_id': item.tmdb_id,
                     'overseerr_media_id': item.overseerr_media_id,
@@ -475,6 +479,7 @@ class QueuePersistenceManager:
                                 extra_data = {}
                         
                         if queue_type == 'movie':
+                            # title already includes year when built in get_queued_items_from_database
                             queue_item = (
                                 db_item['imdb_id'],
                                 db_item['title'],

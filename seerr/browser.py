@@ -829,8 +829,11 @@ def check_red_buttons(driver, movie_title, normalized_seasons, confirmed_seasons
                     title_matched = title_match_ratio >= title_match_threshold
                     # Year comparison (skip for TV shows or if missing)
                     year_matched = True
-                    if not is_tv_show and red_button_year and expected_year:
-                        year_matched = abs(red_button_year - expected_year) <= 1
+                    if not is_tv_show and expected_year:
+                        if red_button_year is None:
+                            year_matched = False  # Card has no year; don't accept for movie with known year
+                        else:
+                            year_matched = abs(red_button_year - expected_year) <= 1
                     # Episode and season matching (for TV shows)
                     season_matched = False
                     episode_matched = True
