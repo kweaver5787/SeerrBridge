@@ -378,6 +378,12 @@ async def update_config(config_data: dict):
         # Write all updates to .env file
         if env_updates:
             env_file.update_env(env_updates)
+            # Reload in-memory config so background tasks and overseerr.py use new values
+            from seerr.config import load_config
+            if load_config(override=True):
+                log_info("API", "Config reloaded in memory (Overseerr/API keys, etc.)", module="api_endpoints", function="update_config")
+            else:
+                log_error("API Error", "Config write succeeded but in-memory reload failed", module="api_endpoints", function="update_config")
         
         # Check if any task-related configurations were updated
         task_config_keys = [
@@ -1067,22 +1073,19 @@ async def mark_media_complete_endpoint(media_id: int, request: Request):
         season_number = data.get('season_number')
         episode_numbers = data.get('episode_numbers')
         
-        # For TV shows, use granular episode marking
-        if media_record.media_type == 'tv' and (season_number is not None or episode_numbers is not None):
+        # For TV shows, always use mark_episodes_complete (episode/season/whole-show)
+        if media_record.media_type == 'tv':
             result = mark_episodes_complete(
                 media_id=media_id,
                 season_number=season_number,
                 episode_numbers=episode_numbers,
                 check_seerr=check_seerr
             )
-            
             if not result.get('success'):
                 raise HTTPException(status_code=400, detail=result.get('message', 'Failed to mark episodes as complete'))
-            
             return result
         
-        # For movies or TV shows marked as complete without season/episode specifiers
-        # Use the original behavior (mark entire media as complete)
+        # For movies: mark entire media as complete
         if check_seerr:
             availability = check_media_availability(media_record.tmdb_id, media_record.media_type)
             if availability and availability.get('available'):

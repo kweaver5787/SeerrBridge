@@ -230,8 +230,8 @@ async def lifespan(app: FastAPI):
     # Startup operations
     logger.info(f"Starting SeerrBridge v{__version__}")
     
-    # Initialize configuration
-    if not load_config():
+    # Initialize configuration - override=True so .env file wins over Docker/env vars
+    if not load_config(override=True):
         logger.error("Failed to load configuration. Exiting.")
         os._exit(1)
     

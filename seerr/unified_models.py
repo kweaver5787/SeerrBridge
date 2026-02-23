@@ -65,6 +65,7 @@ class UnifiedMedia(Base):
     
     # Subscription tracking (for TV shows)
     is_subscribed = Column(Boolean, nullable=False, default=False, index=True)
+    subscription_started_at = Column(DateTime, nullable=True)  # Anchor: when Subscribe was hit; only track episodes on or after this date
     subscription_active = Column(Boolean, nullable=False, default=True, index=True)
     subscription_last_checked = Column(DateTime, nullable=True)
     
@@ -156,6 +157,7 @@ class UnifiedMedia(Base):
             'processing_completed_at': self.processing_completed_at.isoformat() if self.processing_completed_at else None,
             'last_checked_at': self.last_checked_at.isoformat() if self.last_checked_at else None,
             'is_subscribed': self.is_subscribed,
+            'subscription_started_at': self.subscription_started_at.isoformat() if self.subscription_started_at else None,
             'subscription_active': self.subscription_active,
             'subscription_last_checked': self.subscription_last_checked.isoformat() if self.subscription_last_checked else None,
             'torrents_found': self.torrents_found,

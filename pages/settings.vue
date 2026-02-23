@@ -627,6 +627,18 @@
                 />
               </div>
               
+              <div class="flex items-center justify-between gap-2">
+                <label class="text-xs sm:text-sm font-medium text-foreground min-w-0 flex-1">Subscription Check Interval</label>
+                <input 
+                  v-model.number="taskConfig.subscription_check_interval_minutes" 
+                  type="number" 
+                  min="60" 
+                  max="10080"
+                  class="w-16 sm:w-20 h-7 sm:h-8 px-2 text-xs sm:text-sm rounded border border-input bg-background focus:ring-2 focus:ring-primary focus:border-primary"
+                />
+              </div>
+              <p class="text-xs text-muted-foreground">How often to check subscribed shows for new episodes (minutes). Default 1440 = once per day.</p>
+              
             </div>
           </div>
           
@@ -859,6 +871,7 @@ const taskConfig = ref({
   refresh_interval_minutes: 60,
   token_refresh_interval_minutes: 10,
   movie_processing_check_interval_minutes: 15,
+  subscription_check_interval_minutes: 1440,
   movie_queue_maxsize: 250,
   tv_queue_maxsize: 250
 })
@@ -1317,7 +1330,7 @@ const saveSection = async (section) => {
         taskConfig.value[key] !== originalTaskConfig.value[key]
       )
       
-      const needsRestart = section === 'system' && hasRestartRequiredChanges || (section === 'tasks' && ['refresh_interval_minutes', 'token_refresh_interval_minutes', 'movie_processing_check_interval_minutes'].some(key => 
+      const needsRestart = section === 'system' && hasRestartRequiredChanges || (section === 'tasks' && ['refresh_interval_minutes', 'token_refresh_interval_minutes', 'movie_processing_check_interval_minutes', 'subscription_check_interval_minutes'].some(key => 
         taskConfig.value[key] !== originalTaskConfig.value[key]
       ))
       
@@ -1599,6 +1612,7 @@ const resetToDefaults = () => {
       refresh_interval_minutes: 60,
       token_refresh_interval_minutes: 10,
       movie_processing_check_interval_minutes: 15,
+      subscription_check_interval_minutes: 1440,
       movie_queue_maxsize: 250,
       tv_queue_maxsize: 250
     }
@@ -1641,6 +1655,7 @@ const getConfigDescription = (key) => {
     enable_show_subscription_task: 'Enable show subscription task',
     token_refresh_interval_minutes: 'Token refresh interval in minutes',
     movie_processing_check_interval_minutes: 'Movie processing check interval in minutes',
+    subscription_check_interval_minutes: 'Subscription check interval in minutes (default 1440 = once per day)',
     movie_queue_maxsize: 'Movie queue maximum size',
     tv_queue_maxsize: 'TV queue maximum size',
     enable_failed_item_retry: 'Enable failed item retry',

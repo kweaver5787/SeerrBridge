@@ -477,8 +477,8 @@ def prioritize_buttons_in_box(result_box):
     try:
         # Wait for the button container to be present (div with class 'space-x-1 space-y-1')
         try:
-            WebDriverWait(result_box, 2).until(
-                EC.presence_of_element_located((By.XPATH, ".//div[contains(@class, 'space-x-1')]//button"))
+            WebDriverWait(driver, 2).until(
+                lambda d: result_box.find_element(By.XPATH, ".//div[contains(@class, 'space-x-1')]//button")
             )
         except TimeoutException:
             logger.debug("Button container not found immediately, proceeding anyway")
@@ -625,6 +625,7 @@ def prioritize_buttons_in_box(result_box):
 def attempt_button_click_with_state_check(button, result_box):
     """
     Attempts to click a button and waits for its state to change.
+    Waits for overlay to disappear before clicking so the click is not intercepted.
 
     Args:
         button (WebElement): The button element to click.
@@ -633,7 +634,16 @@ def attempt_button_click_with_state_check(button, result_box):
     Returns:
         bool: True if the button's state changes, False otherwise.
     """
+    global driver
+    overlay_xpath = "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"
     try:
+        # Wait for overlay to disappear so click is not intercepted
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.invisibility_of_element_located((By.XPATH, overlay_xpath))
+            )
+        except TimeoutException:
+            pass
         # Get the initial state of the button
         initial_state = button.get_attribute("class")  # Or another attribute relevant to the state
         logger.info(f"Initial button state: {initial_state}")
@@ -642,9 +652,9 @@ def attempt_button_click_with_state_check(button, result_box):
         button.click()
         logger.info("Clicked the button.")
 
-        # Wait for a short period (max 2 seconds) to check for changes in the state
-        WebDriverWait(result_box, 2).until(
-            lambda driver: button.get_attribute("class") != initial_state
+        # Wait for a short period (max 2 seconds) to check for changes in the state (use driver, not result_box)
+        WebDriverWait(driver, 2).until(
+            lambda d: button.get_attribute("class") != initial_state
         )
         logger.info("Button state changed successfully after clicking.")
         return True  # Button was successfully clicked and handled
@@ -654,6 +664,8 @@ def attempt_button_click_with_state_check(button, result_box):
 
     except StaleElementReferenceException:
         logger.error("Stale element reference encountered while waiting for button state change.")
+        # Click may have succeeded and DOM updated; treat as possible success
+        return True
 
     return False
 

@@ -871,6 +871,67 @@ def update_media_processing_status(media_id: int, status: str, processing_stage:
         if 'db' in locals():
             db.close()
 
+
+def recompute_tv_show_status(media_id: int) -> bool:
+    """
+    Derive and set a TV show's status from its seasons_data (app-wide rule).
+    Complete = all aired episodes marked complete, no unaired to wait for.
+    Pending = all aired complete, but there are unaired episodes.
+    Processing = at least one aired episode not marked complete.
+    Also sets is_in_queue when status is processing (so it can be picked up).
+    """
+    try:
+        db = get_db()
+        try:
+            media = db.query(UnifiedMedia).filter(UnifiedMedia.id == media_id).first()
+            if not media or media.media_type != 'tv':
+                return False
+            seasons_data = media.seasons_data or []
+            all_aired_complete = True
+            has_unaired = False
+            for season in seasons_data:
+                if not isinstance(season, dict):
+                    continue
+                aired = season.get('aired_episodes', 0)
+                episode_count = season.get('episode_count', 0)
+                confirmed = len(season.get('confirmed_episodes', []))
+                if confirmed < aired:
+                    all_aired_complete = False
+                if episode_count > 0 and aired < episode_count:
+                    has_unaired = True
+            if not all_aired_complete:
+                new_status = 'processing'
+                new_stage = 'episodes_pending'
+            elif has_unaired:
+                new_status = 'pending'
+                new_stage = 'waiting_for_new_episodes'
+            else:
+                new_status = 'completed'
+                new_stage = 'all_episodes_complete'
+            media.status = new_status
+            media.processing_stage = new_stage
+            media.last_checked_at = datetime.utcnow()
+            media.updated_at = datetime.utcnow()
+            if new_status == 'completed':
+                media.processing_completed_at = datetime.utcnow()
+            elif new_status == 'processing':
+                media.processing_started_at = datetime.utcnow()
+            db.commit()
+            from seerr.database_queue_manager import database_queue_manager
+            database_queue_manager._update_queue_tracking(media, in_queue=(new_status == 'processing'))
+            log_info("TV Status", f"Recomputed {media.title} -> {new_status}", module="unified_media_manager", function="recompute_tv_show_status")
+            return True
+        except Exception as e:
+            db.rollback()
+            log_error("TV Status", f"Error recomputing TV show status: {e}", module="unified_media_manager", function="recompute_tv_show_status")
+            return False
+        finally:
+            db.close()
+    except Exception as e:
+        log_error("TV Status", f"Error recomputing TV show status: {e}", module="unified_media_manager", function="recompute_tv_show_status")
+        return False
+
+
 def mark_episodes_complete(media_id: int, season_number: int = None, episode_numbers: List[int] = None, 
                           check_seerr: bool = True) -> Dict[str, Any]:
     """
@@ -907,6 +968,10 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
                     if seerr_media_id:
                         mark_completed(seerr_media_id, media.tmdb_id)
             
+            # Require season_number when marking specific episodes
+            if episode_numbers is not None and season_number is None:
+                return {"success": False, "message": "season_number is required when episode_numbers is provided"}
+            
             # Get or initialize seasons_data
             seasons_data = media.seasons_data or []
             if not seasons_data:
@@ -916,7 +981,6 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
             
             marked_episodes = []
             updated_seasons = []
-            all_seasons_complete = True
             
             # Process each season
             for season_data in seasons_data:
@@ -925,11 +989,6 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
                 # If season_number specified, only process that season
                 if season_number is not None and season_num != season_number:
                     updated_seasons.append(season_data)
-                    # Check if this season is complete
-                    confirmed = set(season_data.get('confirmed_episodes', []))
-                    aired = season_data.get('aired_episodes', 0)
-                    if len(confirmed) < aired:
-                        all_seasons_complete = False
                     continue
                 
                 # Get current episode lists
@@ -942,16 +1001,16 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
                 episodes_to_mark = set()
                 
                 if episode_numbers:
-                    # Mark specific episodes
+                    # Mark specific episodes only (in the selected season)
                     for ep_num in episode_numbers:
                         ep_id = f"E{str(ep_num).zfill(2)}"
                         episodes_to_mark.add(ep_id)
                 elif season_number is not None:
-                    # Mark all failed and unprocessed episodes in this season
+                    # Mark all unprocessed and failed episodes in this season
                     episodes_to_mark = failed_episodes | unprocessed_episodes
                 else:
-                    # Mark entire show - all failed and unprocessed in all seasons
-                    episodes_to_mark = failed_episodes | unprocessed_episodes
+                    # Mark entire show: all aired episodes in this season become confirmed
+                    episodes_to_mark = {f"E{str(i).zfill(2)}" for i in range(1, aired_episodes + 1)} if aired_episodes > 0 else set()
                 
                 # Update episode lists
                 for ep_id in episodes_to_mark:
@@ -966,35 +1025,31 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
                 season_data['unprocessed_episodes'] = sorted(list(unprocessed_episodes))
                 season_data['updated_at'] = datetime.utcnow().isoformat()
                 
-                # Check if season is complete
                 if len(confirmed_episodes) >= aired_episodes and aired_episodes > 0:
                     season_data['status'] = 'completed'
                     season_data['is_complete'] = True
                 else:
-                    season_data['status'] = 'in_progress'
+                    season_data['status'] = 'processing' if (unprocessed_episodes or failed_episodes) else 'pending'
                     season_data['is_complete'] = False
-                    all_seasons_complete = False
                 
                 updated_seasons.append(season_data)
             
-            # Update media record
+            # Persist updated seasons
             media.seasons_data = updated_seasons
             media.last_checked_at = datetime.utcnow()
             media.updated_at = datetime.utcnow()
-            
-            # If all seasons are complete, mark show as completed
-            if all_seasons_complete:
-                media.status = 'completed'
-                media.processing_completed_at = datetime.utcnow()
-                # Preserve subscription status - don't change is_subscribed
-                log_info("Episode Marking", f"All seasons complete for {media.title}, marked show as completed", 
-                        module="unified_media_manager", function="mark_episodes_complete")
-            else:
-                # Keep current status or set to processing if it was failed
-                if media.status == 'failed':
-                    media.status = 'processing'
-            
             db.commit()
+            
+            # Derive show status from DB state (app-wide rule)
+            recompute_tv_show_status(media_id)
+            
+            # Reload to get recomputed status for response
+            db2 = get_db()
+            try:
+                media_after = db2.query(UnifiedMedia).filter(UnifiedMedia.id == media_id).first()
+                all_seasons_complete = (media_after and media_after.status == 'completed')
+            finally:
+                db2.close()
             
             # Build response message
             if episode_numbers:
@@ -1002,10 +1057,10 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
             elif season_number is not None:
                 message = f"Marked all remaining episodes in Season {season_number} as complete"
             else:
-                message = f"Marked all remaining episodes in all seasons as complete"
+                message = f"Marked all aired episodes in all seasons as complete"
             
             if all_seasons_complete:
-                message += " (all seasons now complete)"
+                message += " (show is now complete)"
             
             return {
                 "success": True,
@@ -1198,10 +1253,12 @@ def subscribe_to_existing_show(tmdb_id: int, mark_existing_completed: bool = Tru
         ).first()
         
         if existing_media:
-            # Update existing media to subscribed
+            # Update existing media to subscribed; anchor = first time Subscribe was hit
             existing_media.is_subscribed = True
             existing_media.subscription_active = True
             existing_media.subscription_last_checked = datetime.utcnow()
+            if existing_media.subscription_started_at is None:
+                existing_media.subscription_started_at = datetime.utcnow()
             
             # If mark_existing_completed is True, mark all seasons as completed
             if mark_existing_completed and existing_media.seasons_data:
@@ -1219,9 +1276,10 @@ def subscribe_to_existing_show(tmdb_id: int, mark_existing_completed: bool = Tru
                             season['unprocessed_episodes'] = []
                 
                 existing_media.seasons_data = seasons_data
-                existing_media.status = 'completed'
             
             db.commit()
+            if mark_existing_completed and existing_media.seasons_data:
+                recompute_tv_show_status(existing_media.id)
             log_info("TV Subscription", f"Updated existing subscription for {existing_media.title}")
             return existing_media.id
         
@@ -1242,54 +1300,69 @@ def subscribe_to_existing_show(tmdb_id: int, mark_existing_completed: bool = Tru
             log_warning("TV Subscription", f"No seasons found for show {tmdb_id}, creating with empty seasons")
             all_seasons = []
         
-        # Create seasons_data with all existing seasons marked as completed
+        # Anchor: "Subscribe to Future Episodes" = only include seasons/episodes on or after today
+        subscription_start_dt = datetime.utcnow()
+        anchor_date = subscription_start_dt.date()
+        today_utc = datetime.now(timezone.utc).date()
+
+        def _parse_first_aired(episode):
+            fa = episode.get('first_aired')
+            if not fa:
+                return None
+            try:
+                if isinstance(fa, str):
+                    return datetime.fromisoformat(fa.replace('Z', '+00:00'))
+                if hasattr(fa, 'date'):
+                    return fa
+                return None
+            except Exception:
+                return None
+
+        # Create seasons_data: only seasons with episodes on or after anchor (forward-only)
         seasons_data = []
         for season_info in all_seasons:
             season_number = season_info.get('number', 0)
             if season_number == 0:  # Skip specials
                 continue
-            
-            # Get episode count from season info
             episodes = season_info.get('episodes', [])
             episode_count = len(episodes)
-            
-            # Count aired episodes (episodes with air_date in the past or today)
-            current_date = datetime.now(timezone.utc).date()
-            aired_episodes = 0
+            # Count episodes that aired on or after anchor (and on or before today)
+            aired_on_or_after_anchor = 0
+            has_future_or_unaired = False
             for episode in episodes:
-                air_date = episode.get('first_aired')
-                if air_date:
-                    try:
-                        if isinstance(air_date, str):
-                            ep_date = datetime.fromisoformat(air_date.replace('Z', '+00:00')).date()
-                        else:
-                            ep_date = air_date.date() if hasattr(air_date, 'date') else current_date
-                        if ep_date <= current_date:
-                            aired_episodes += 1
-                    except Exception:
-                        aired_episodes += 1  # Assume aired if we can't parse date
-            
-            # Create season data with all aired episodes marked as confirmed
-            confirmed_episodes = []
-            if mark_existing_completed and aired_episodes > 0:
-                confirmed_episodes = [f"E{str(i).zfill(2)}" for i in range(1, aired_episodes + 1)]
-            
+                fa = _parse_first_aired(episode)
+                if fa is None:
+                    has_future_or_unaired = True
+                    continue
+                d = fa.date() if hasattr(fa, 'date') else fa
+                if anchor_date <= d <= today_utc:
+                    aired_on_or_after_anchor += 1
+                elif d > today_utc:
+                    has_future_or_unaired = True
+            # Only include season if it has episodes on or after anchor or future/unaired
+            if aired_on_or_after_anchor == 0 and not has_future_or_unaired:
+                continue
+            # Future-only: unprocessed = aired episodes to fetch; confirmed = none yet
+            unprocessed = [f"E{str(i).zfill(2)}" for i in range(1, aired_on_or_after_anchor + 1)] if aired_on_or_after_anchor > 0 else []
             season_data = EnhancedSeasonManager.create_enhanced_season_data(
                 season_number=season_number,
                 episode_count=episode_count,
-                aired_episodes=aired_episodes,
-                confirmed_episodes=confirmed_episodes,
+                aired_episodes=aired_on_or_after_anchor,
+                confirmed_episodes=[],
                 failed_episodes=[],
-                unprocessed_episodes=[],
+                unprocessed_episodes=unprocessed,
                 is_discrepant=False
             )
+            season_data['status'] = 'processing' if unprocessed or (aired_on_or_after_anchor < episode_count) else 'pending'
             seasons_data.append(season_data)
         
         # Determine title and year
         title = media_details.get('title', 'Unknown Show')
         year = media_details.get('year', 0)
-        
-        # Create new media record
+        has_unprocessed = any(s.get('unprocessed_episodes') for s in seasons_data)
+        initial_status = 'processing' if has_unprocessed else 'pending'
+
+        # Create new media record (forward-only from subscription_started_at)
         new_media = UnifiedMedia(
             tmdb_id=tmdb_id,
             imdb_id=media_details.get('imdb_id', ''),
@@ -1298,11 +1371,12 @@ def subscribe_to_existing_show(tmdb_id: int, mark_existing_completed: bool = Tru
             title=title,
             year=year,
             overview=media_details.get('overview', ''),
-            status='completed' if mark_existing_completed else 'pending',
+            status=initial_status,
             processing_stage='subscription_created',
-            processing_completed_at=datetime.utcnow() if mark_existing_completed else None,
+            processing_completed_at=None,
             last_checked_at=datetime.utcnow(),
             is_subscribed=True,
+            subscription_started_at=subscription_start_dt,
             subscription_active=True,
             subscription_last_checked=datetime.utcnow(),
             seasons_data=seasons_data,
@@ -1329,7 +1403,7 @@ def subscribe_to_existing_show(tmdb_id: int, mark_existing_completed: bool = Tru
         except Exception as e:
             log_warning("TV Subscription", f"Failed to store images for {title}: {e}")
         
-        log_info("TV Subscription", f"Created subscription for {title} with {len(seasons_data)} seasons marked as completed")
+        log_info("TV Subscription", f"Created subscription for {title} with {len(seasons_data)} seasons (forward-only from subscribe date)")
         
         # Create notification
         create_notification(
@@ -1801,6 +1875,7 @@ def update_tv_show_season_count(tmdb_id: int, requested_seasons: List[int], titl
         tv_show.updated_at = datetime.utcnow()
         
         db.commit()
+        recompute_tv_show_status(tv_show.id)
         
         log_success("Season Count Update", f"Successfully added {len(new_seasons)} new seasons for {title} (seasons: {new_seasons})")
         return True

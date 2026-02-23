@@ -181,8 +181,8 @@ def load_config(override=False):
     
     return True
 
-# Initialize configuration
-load_config()
+# Initialize configuration - use override=True so .env file wins over Docker/env vars at startup
+load_config(override=True)
 
 def update_env_file():
     """Update the .env file with the new access token."""

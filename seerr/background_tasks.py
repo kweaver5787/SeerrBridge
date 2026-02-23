@@ -23,7 +23,7 @@ from seerr.config import (
 from seerr.task_config_manager import task_config
 from seerr.browser import driver, click_show_more_results, check_red_buttons, prioritize_buttons_in_box
 from seerr.overseerr import get_overseerr_media_requests, mark_completed
-from seerr.trakt import get_media_details_from_trakt, get_season_details_from_trakt, check_next_episode_aired
+from seerr.trakt import get_media_details_from_trakt, get_season_details_from_trakt, check_next_episode_aired, get_all_seasons_from_trakt
 from seerr.utils import parse_requested_seasons, normalize_season, extract_season, clean_title
 from seerr.database import get_db, LibraryStats, QueueStatus
 from seerr.image_utils import fetch_trakt_show_images, fetch_trakt_movie_images, store_show_image, store_media_images, should_update_image
@@ -245,6 +245,24 @@ async def check_config_changes():
                 should_refresh = True
                 log_info("Config Refresh", f"Queue reconciliation interval changed: {current_jobs['reconcile_queues_periodically'].trigger.interval.total_seconds() / 60} -> {reconcile_interval}", 
                         module="background_tasks", function="check_config_changes")
+            
+            # 6. Check subscription check - only if enable_show_subscription_task is True
+            enable_sub = task_config.get_config('enable_show_subscription_task', False)
+            sub_interval = float(task_config.get_config('subscription_check_interval_minutes', 1440))
+            if enable_sub:
+                if 'subscription_check' not in current_jobs:
+                    should_refresh = True
+                    log_info("Config Refresh", "Subscription check enabled but job missing, will refresh", 
+                            module="background_tasks", function="check_config_changes")
+                elif abs(current_jobs['subscription_check'].trigger.interval.total_seconds() / 60 - sub_interval) > 0.1:
+                    should_refresh = True
+                    log_info("Config Refresh", f"Subscription check interval changed: {current_jobs['subscription_check'].trigger.interval.total_seconds() / 60} -> {sub_interval}", 
+                            module="background_tasks", function="check_config_changes")
+            else:
+                if 'subscription_check' in current_jobs:
+                    should_refresh = True
+                    log_info("Config Refresh", "Subscription check disabled but job still exists, will refresh", 
+                            module="background_tasks", function="check_config_changes")
         
         if should_refresh:
             log_info("Config Refresh", "Configuration changes detected, refreshing scheduled tasks", 
@@ -280,6 +298,9 @@ async def refresh_all_scheduled_tasks():
     
     # Schedule failed item processing
     schedule_failed_item_processing()
+    
+    # Schedule subscription check (own interval, default once per day)
+    schedule_subscription_check()
     
     # Schedule periodic queue reconciliation (every 2 minutes to drain cleared items)
     scheduler.add_job(
@@ -438,6 +459,25 @@ async def add_failed_item_processing_to_queue():
         log_info("Failed Item Processing", "Added failed item processing task to queue", module="background_tasks", function="add_failed_item_processing_to_queue")
     except Exception as e:
         log_error("Failed Item Processing", f"Error adding failed item processing to queue: {e}", module="background_tasks", function="add_failed_item_processing_to_queue")
+
+def schedule_subscription_check():
+    """Schedule subscription check on its own interval (default 1440 min = once per day)."""
+    if not task_config.get_config('background_tasks_enabled', True) or not task_config.get_config('scheduler_enabled', True):
+        log_info("Subscription Check", "Background tasks or scheduler disabled. Skipping subscription check scheduling.", module="background_tasks", function="schedule_subscription_check")
+        return
+    if not task_config.get_config('enable_show_subscription_task', False):
+        log_info("Subscription Check", "Show subscription check disabled. Not scheduling.", module="background_tasks", function="schedule_subscription_check")
+        return
+    interval = int(task_config.get_config('subscription_check_interval_minutes', 1440))
+    scheduler.add_job(
+        add_subscription_check_to_queue,
+        'interval',
+        minutes=interval,
+        id="subscription_check",
+        replace_existing=True,
+        max_instances=1
+    )
+    log_info("Subscription Check", f"Scheduled subscription check every {interval} minutes.", module="background_tasks", function="schedule_subscription_check")
 
 async def schedule_recheck_movie_requests():
     """Schedule or reschedule the movie requests recheck job, replacing any existing job."""
@@ -967,38 +1007,43 @@ async def process_tv_queue():
                                     media_record = get_media_by_tmdb(tmdb_id, media_type)
                                     
                                     if media_record:
-                                        # Update processing status
-                                        update_media_processing_status(
-                                            media_record.id,
-                                            'completed',
-                                            'tv_processing_complete',
-                                            extra_data={'completed_at': datetime.utcnow().isoformat(), 'overseerr_media_id': media_id}
-                                        )
-                                        
-                                        # For TV shows, update season completion status and set subscription
+                                        # For TV shows, update season completion then derive status via recompute.
+                                        # Both update_tv_show_seasons and update_media_details are intentional:
+                                        # the former persists seasons_data and derived fields (total_seasons, etc.);
+                                        # the latter persists seasons_data again and subscription fields.
                                         if media_type == 'tv' and media_record.seasons_data:
                                             from seerr.enhanced_season_manager import EnhancedSeasonManager
+                                            from seerr.unified_media_manager import update_media_details, recompute_tv_show_status
                                             
-                                            # Mark all seasons as completed
                                             seasons_data = media_record.seasons_data
                                             for season in seasons_data:
                                                 if isinstance(season, dict):
                                                     season['status'] = 'completed'
                                                     season['updated_at'] = datetime.utcnow().isoformat()
+                                                    aired = season.get('aired_episodes', 0)
+                                                    if aired > 0:
+                                                        season['confirmed_episodes'] = [f"E{str(i).zfill(2)}" for i in range(1, aired + 1)]
+                                                        season['unprocessed_episodes'] = []
+                                                        season['failed_episodes'] = []
                                             
-                                            # Update the seasons data
                                             EnhancedSeasonManager.update_tv_show_seasons(tmdb_id, seasons_data, movie_title)
-                                            log_info("Season Update", f"Marked all seasons as completed for {movie_title}", module="background_tasks", function="process_tv_queue")
-                                            
-                                            # Set subscription status for TV shows
-                                            from seerr.unified_media_manager import update_media_details
                                             update_media_details(
                                                 media_record.id,
+                                                seasons_data=seasons_data,
                                                 is_subscribed=True,
                                                 subscription_active=True,
                                                 subscription_last_checked=datetime.utcnow()
                                             )
-                                            log_info("Subscription Update", f"Set subscription status for {movie_title}", module="background_tasks", function="process_tv_queue")
+                                            recompute_tv_show_status(media_record.id)
+                                            log_info("Season Update", f"Marked all seasons as completed for {movie_title}", module="background_tasks", function="process_tv_queue")
+                                        else:
+                                            from seerr.unified_media_manager import update_media_processing_status
+                                            update_media_processing_status(
+                                                media_record.id,
+                                                'completed',
+                                                'tv_processing_complete',
+                                                extra_data={'completed_at': datetime.utcnow().isoformat(), 'overseerr_media_id': media_id}
+                                            )
                                         
                                         log_info("Media Update", f"Updated unified_media status to completed for {movie_title} (TMDB: {tmdb_id})", module="background_tasks", function="process_tv_queue")
                                     else:
@@ -2047,8 +2092,6 @@ async def populate_queues_from_overseerr():
     requests = get_overseerr_media_requests()
     if not requests:
         logger.info("No requests to process")
-        # Add subscription check to TV queue even if no new requests
-        await add_subscription_check_to_queue()
         return
     
     movies_added = 0
@@ -2401,6 +2444,10 @@ async def populate_queues_from_overseerr():
                     success = EnhancedSeasonManager.update_tv_show_seasons(tmdb_id, seasons_data, media_title)
                     
                     if success:
+                        from seerr.unified_media_manager import get_media_by_tmdb, recompute_tv_show_status
+                        media_record = get_media_by_tmdb(tmdb_id, 'tv')
+                        if media_record:
+                            recompute_tv_show_status(media_record.id)
                         logger.info(f"Successfully updated {media_title} with enhanced season tracking")
                     else:
                         logger.warning(f"Failed to update {media_title} with enhanced season tracking")
@@ -2412,9 +2459,6 @@ async def populate_queues_from_overseerr():
         # Queue addition is now handled earlier in the flow
 
     logger.info(f"Added {movies_added} movies and {tv_shows_added} TV shows to queues")
-    
-    # Always add subscription check to TV queue at the end
-    await add_subscription_check_to_queue()
     
     logger.info("Finished populating queues from Overseerr requests.")
     await schedule_recheck_movie_requests()
@@ -2839,643 +2883,148 @@ async def check_stuck_items_on_startup():
     except Exception as e:
         logger.error(f"Startup Check: Error during startup check: {e}")
 
+def _parse_first_aired(episode: dict) -> Optional[datetime]:
+    """Parse first_aired from Trakt episode dict; return None if missing or unparseable."""
+    fa = episode.get('first_aired')
+    if not fa:
+        return None
+    try:
+        if isinstance(fa, str):
+            return datetime.fromisoformat(fa.replace('Z', '+00:00'))
+        if hasattr(fa, 'date'):
+            return fa
+        return None
+    except Exception:
+        return None
+
+
 async def check_show_subscriptions():
     """
-    Recurring task to check for new episodes in subscribed shows from database.
-    Updates the database with the latest aired episode counts and processes new episodes if found.
-    Also reattempts processing of previously failed episodes and checks for the next episode if there's a discrepancy.
+    Check all subscribed shows for new episodes (anchor = subscription_started_at).
+    Refreshes from Trakt (forward-only: only seasons/episodes on or after anchor).
+    Updates DB and adds to queue only when there are episodes to fetch. No inline DMM.
     """
-    # Check if show subscription task is enabled
     if not task_config.get_config('enable_show_subscription_task', False):
         logger.info("Show subscription check disabled (enable_show_subscription_task=False).")
         return
-    
+
     logger.info("Starting show subscription check...")
-
-    # Check if browser driver is available
-    from seerr.browser import driver as browser_driver
-    if browser_driver is None:
-        log_warning("Browser Warning", "Browser driver not initialized. Attempting to initialize...", module="background_tasks", function="populate_queues_from_overseerr")
-        from seerr.browser import initialize_browser
-        await initialize_browser()
-        from seerr.browser import driver as browser_driver
-        if browser_driver is None:
-            logger.error("Failed to initialize browser driver. Cannot check show subscriptions.")
-            return
-
-    logger.info("Starting show subscription check processing")
-    
-    # Get active show subscriptions from unified_media table
     from seerr.unified_models import UnifiedMedia
+    from seerr.unified_media_manager import update_media_details, recompute_tv_show_status, get_media_by_id
+    from seerr.enhanced_season_manager import EnhancedSeasonManager
+    from seerr.database_queue_manager import database_queue_manager
+
     db = get_db()
     try:
         subscriptions = db.query(UnifiedMedia).filter(
             UnifiedMedia.media_type == 'tv',
             UnifiedMedia.is_subscribed == True,
-            UnifiedMedia.status != 'ignored'  # Exclude ignored items
+            UnifiedMedia.status != 'ignored'
         ).all()
-        
         if not subscriptions:
-            logger.info("No active show subscriptions found in database. Skipping show subscription check.")
+            logger.info("No active show subscriptions found. Skipping show subscription check.")
             return
     finally:
         db.close()
 
-    # Process each show subscription from database
+    today_utc = datetime.now(timezone.utc).date()
+
     for subscription in subscriptions:
-        # Check if item is still in queue before processing subscription
-        # If user cleared it from queue, skip processing
-        if subscription.is_in_queue == False:
-            logger.info(f"Show {subscription.title} (TMDB: {subscription.tmdb_id}) is not in queue. Skipping subscription check.")
-            continue
-        
         show_title = subscription.title
         trakt_show_id = subscription.trakt_id
-        imdb_id = subscription.imdb_id
         tmdb_id = subscription.tmdb_id
-        # Get season information from seasons_data instead of old fields
-        if not subscription.seasons_data:
-            logger.warning(f"No seasons_data found for {show_title}. Skipping.")
+        imdb_id = subscription.imdb_id
+        if not trakt_show_id:
+            logger.warning(f"No trakt_id for {show_title}. Skipping.")
             continue
-        
-        # Process each season in the seasons_data
-        for season_data in subscription.seasons_data:
-            if not isinstance(season_data, dict):
+
+        # Anchor: only track episodes that aired or are scheduled on or after this date
+        anchor_dt = subscription.subscription_started_at or subscription.created_at
+        anchor_date = anchor_dt.date() if anchor_dt else datetime.min.date()
+
+        all_seasons_trakt = get_all_seasons_from_trakt(str(trakt_show_id))
+        if not all_seasons_trakt:
+            logger.warning(f"Failed to fetch Trakt seasons for {show_title}. Skipping.")
+            continue
+
+        existing_seasons_data = [dict(s) for s in (subscription.seasons_data or []) if isinstance(s, dict)]
+        existing_season_numbers = {s.get('season_number') for s in existing_seasons_data if s.get('season_number') is not None}
+
+        for trakt_season in all_seasons_trakt:
+            season_number = trakt_season.get('number', 0)
+            if season_number == 0:
                 continue
-                
-            season_number = season_data.get('season_number')
-            if not season_number:
-                continue
-                
-            season_details = season_data
-            previous_aired_episodes = season_data.get('aired_episodes', 0)
-            failed_episodes = season_data.get('failed_episodes', [])
-            confirmed_episodes = season_data.get('confirmed_episodes', [])
-            unprocessed_episodes = season_data.get('unprocessed_episodes', [])
-
-            logger.info(f"Checking for new episodes for {show_title} Season {season_number}...")
-
-            # Check if this show was previously completed but now has new episodes
-            if subscription.overseerr_request_id:
-                from seerr.unified_media_manager import get_media_by_overseerr_request
-                media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                if media_record and media_record.status == 'completed':
-                    logger.info(f"Found completed show {show_title} - checking for new episodes...")
-                    # We'll check for new episodes below and update status if needed
-
-            if not trakt_show_id or not season_number or not imdb_id:
-                logger.warning(f"Missing trakt_show_id, season_number, or imdb_id for {show_title}. Skipping.")
-                continue
-
-            # Fetch the latest season details from Trakt
-            latest_season_details = get_season_details_from_trakt(str(trakt_show_id), season_number)
-            if not latest_season_details:
-                logger.error(f"Failed to fetch latest season details for {show_title} Season {season_number}. Skipping.")
-                continue
-
-            current_aired_episodes = latest_season_details.get("aired_episodes", 0)
-            episode_count = latest_season_details.get("episode_count", 0)
-            logger.info(f"Previous aired episodes: {previous_aired_episodes}, Current aired episodes: {current_aired_episodes}, Episode count: {episode_count}")
-
-            # Check for the next episode if there's a discrepancy
-            if episode_count != current_aired_episodes:
-                has_aired, next_episode_details = check_next_episode_aired(
-                    str(trakt_show_id), season_number, current_aired_episodes
-                )
-                if has_aired:
-                    logger.info(f"Next episode (E{current_aired_episodes + 1:02d}) has aired for {show_title} Season {season_number}. Updating aired_episodes.")
-                    latest_season_details['aired_episodes'] = current_aired_episodes + 1
-                    current_aired_episodes += 1
-                else:
-                    logger.info(f"Next episode (E{current_aired_episodes + 1:02d}) has not aired for {show_title} Season {season_number}.")
-
-            # Update the subscription in the database with latest episode counts
-            # Use the unified media system instead of the old subscription system
-            from seerr.unified_media_manager import update_media_details
-            
-            # Find the media record for this subscription
-            if subscription.overseerr_request_id:
-                from seerr.unified_media_manager import get_media_by_overseerr_request
-                media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                if media_record:
-                    # Update the seasons_data with the latest information
-                    seasons_data = media_record.seasons_data or []
-                    updated_seasons = []
-                    
-                    for season_data in seasons_data:
-                        if season_data.get('season_number') == season_number:
-                            # Update this season's data
-                            season_data['aired_episodes'] = current_aired_episodes
-                            season_data['episode_count'] = episode_count
-                            season_data['last_checked'] = datetime.utcnow().isoformat()
-                            season_data['updated_at'] = datetime.utcnow().isoformat()
-                            # Update other fields from latest_season_details if available
-                            if 'status' in latest_season_details:
-                                season_data['status'] = latest_season_details['status']
-                            if 'rating' in latest_season_details:
-                                season_data['rating'] = latest_season_details['rating']
-                        updated_seasons.append(season_data)
-                    
-                    # Update the media record with the new seasons data
-                    update_media_details(
-                        media_record.id,
-                        seasons_data=updated_seasons,
-                        last_checked_at=datetime.utcnow()
-                    )
-                    logger.info(f"Updated seasons data for {show_title} Season {season_number}")
-                else:
-                    logger.warning(f"Could not find media record for subscription {show_title}")
-            else:
-                logger.warning(f"No overseerr_request_id for subscription {show_title}")
-            
-            # Check if a previously completed show now has new episodes and needs to be reactivated
-            if subscription.overseerr_request_id:
-                from seerr.unified_media_manager import get_media_by_overseerr_request, update_media_processing_status
-                media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                if media_record and media_record.status == 'completed':
-                    # Check if there are new episodes that haven't been confirmed
-                    needs_reactivation = False
-                    reactivation_reason = ""
-                    
-                    # Case 1: New aired episodes that haven't been confirmed
-                    if current_aired_episodes > len(confirmed_episodes):
-                        needs_reactivation = True
-                        reactivation_reason = f"New aired episodes: {current_aired_episodes} aired, {len(confirmed_episodes)} confirmed"
-                    
-                    # Case 2: Show has more total episodes than confirmed (future episodes coming)
-                    elif episode_count > len(confirmed_episodes):
-                        needs_reactivation = True
-                        reactivation_reason = f"Future episodes pending: {episode_count} total, {len(confirmed_episodes)} confirmed"
-                    
-                    if needs_reactivation:
-                        logger.info(f"Completed show {show_title} needs reactivation: {reactivation_reason}")
-                        update_media_processing_status(
-                            media_record.id, 
-                            'processing', 
-                            'new_episodes_detected',
-                            reactivation_reason
-                        )
-                        logger.info(f"Reactivated {show_title} from completed to processing: {reactivation_reason}")
-
-            # Get current episode statuses from database
-            # Initialize lists to track episode statuses
-            episodes_to_process = []
-            new_unprocessed_episodes = []
-            
-            # Check ALL aired episodes to categorize their status
-            logger.info(f"Verifying confirmation status for all {current_aired_episodes} aired episodes...")
-            
-            for episode_num in range(1, current_aired_episodes + 1):
-                episode_id = f"E{episode_num:02d}"
-                
-                # Check if this episode is already confirmed
-                if episode_id in confirmed_episodes:
-                    logger.info(f"Episode {episode_id} is already confirmed in database. Skipping verification.")
+            episodes = trakt_season.get('episodes', [])
+            episode_count = len(episodes)
+            # Count episodes that aired on or after anchor (and on or before today)
+            aired_on_or_after_anchor = 0
+            has_future_or_unaired = False
+            for ep in episodes:
+                fa = _parse_first_aired(ep)
+                if fa is None:
+                    has_future_or_unaired = True
                     continue
-                    
-                # Check if this episode was previously failed
-                if episode_id in failed_episodes:
-                    episodes_to_process.append((episode_num, episode_id, "failed"))
-                    logger.info(f"Reattempting previously failed episode {episode_id}")
-                else:
-                    # This episode needs verification - it's not confirmed and not failed
-                    episodes_to_process.append((episode_num, episode_id, "verify"))
-                    new_unprocessed_episodes.append(episode_id)
-                    logger.info(f"Episode {episode_id} needs verification - not confirmed in database")
-
-        # Update unprocessed episodes in database if we have new unprocessed episodes
-        if new_unprocessed_episodes:
-            # Combine with existing unprocessed episodes and remove duplicates
-            all_unprocessed = list(set(unprocessed_episodes + new_unprocessed_episodes))
-            
-            # Update the unified media record with new unprocessed episodes
-            if subscription.overseerr_request_id:
-                from seerr.unified_media_manager import get_media_by_overseerr_request, update_media_details
-                media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                if media_record:
-                    seasons_data = media_record.seasons_data or []
-                    updated_seasons = []
-                    
-                    for season_data in seasons_data:
-                        if season_data.get('season_number') == season_number:
-                            season_data['unprocessed_episodes'] = all_unprocessed
-                            season_data['updated_at'] = datetime.utcnow().isoformat()
-                        updated_seasons.append(season_data)
-                    
-                    update_media_details(
-                        media_record.id,
-                        seasons_data=updated_seasons
-                    )
-            
-            # Update local list for consistency
-            unprocessed_episodes = all_unprocessed
-            
-            logger.info(f"Updated database with {len(new_unprocessed_episodes)} new unprocessed episodes: {new_unprocessed_episodes}")
-            logger.info(f"Total unprocessed episodes: {len(unprocessed_episodes)} - {unprocessed_episodes}")
-
-        # If there are no episodes to process, skip
-        if not episodes_to_process:
-            logger.info(f"All episodes for {show_title} Season {season_number} are already confirmed. No processing needed.")
-            continue
-
-        # Navigate to the show page
-        from seerr.browser import driver as browser_driver
-        
-        # Check queue status before title search or navigation
-        if tmdb_id:
-            from seerr.search import _check_queue_status
-            if _check_queue_status(tmdb_id, 'tv'):
-                logger.info(f"Show {show_title} (TMDB: {tmdb_id}) is not in queue. Skipping subscription check for this show.")
+                d = fa.date() if hasattr(fa, 'date') else fa
+                if anchor_date <= d <= today_utc:
+                    aired_on_or_after_anchor += 1
+                elif d > today_utc:
+                    has_future_or_unaired = True
+            # Only include season if it has episodes on or after anchor or future/unaired
+            if aired_on_or_after_anchor == 0 and not has_future_or_unaired:
                 continue
-        
-        # Check if IMDB ID is missing or invalid - if so, search by title (RARE FALLBACK)
-        if not imdb_id or imdb_id.lower() == 'none' or (isinstance(imdb_id, str) and imdb_id.strip() == ''):
-            logger.warning(f"IMDB ID is missing or invalid ({imdb_id}) for {show_title}. Performing title search fallback (rare case).")
-            from seerr.search import search_dmm_by_title_and_extract_id
-            import re
-            
-            # Extract year from title if present (format: "Title (Year)")
-            year = None
-            title_for_search = show_title
-            year_match = re.search(r'\((\d{4})\)', show_title)
-            if year_match:
-                year = int(year_match.group(1))
-                title_for_search = show_title.split('(')[0].strip()
-            
-            # Search DMM by title to find IMDB ID (pass tmdb_id for queue checks)
-            found_imdb_id = search_dmm_by_title_and_extract_id(browser_driver, title_for_search, 'tv', year, tmdb_id)
-            
-            if found_imdb_id:
-                logger.info(f"Found IMDB ID via title search: {found_imdb_id}. Using it instead of missing ID.")
-                imdb_id = found_imdb_id
+            now_iso = datetime.utcnow().isoformat()
+            unprocessed = [f"E{str(i).zfill(2)}" for i in range(1, aired_on_or_after_anchor + 1)] if aired_on_or_after_anchor > 0 else []
+
+            if season_number in existing_season_numbers:
+                for ex in existing_seasons_data:
+                    if ex.get('season_number') == season_number:
+                        confirmed = ex.get('confirmed_episodes', [])
+                        failed = ex.get('failed_episodes', [])
+                        unprocessed = [e for e in unprocessed if e not in confirmed]
+                        ex['episode_count'] = episode_count
+                        ex['aired_episodes'] = aired_on_or_after_anchor
+                        ex['unprocessed_episodes'] = list(set(ex.get('unprocessed_episodes', []) + unprocessed))
+                        ex['last_checked'] = now_iso
+                        ex['updated_at'] = now_iso
+                        ex['status'] = 'processing' if unprocessed or (aired_on_or_after_anchor < episode_count) else 'completed'
+                        break
             else:
-                logger.error(f"Could not find IMDB ID via title search for '{title_for_search}'. Skipping this show.")
-                continue
-        
-        # Check queue status again before navigation
-        if tmdb_id:
-            from seerr.search import _check_queue_status
-            if _check_queue_status(tmdb_id, 'tv'):
-                logger.info(f"Show {show_title} (TMDB: {tmdb_id}) is not in queue. Stopping before navigation.")
-                continue
-        
-        url = f"https://debridmediamanager.com/show/{imdb_id}/{season_number}"
-        browser_driver.get(url)
-        logger.info(f"Navigated to show page for Season {season_number}: {url}")
-        
-        # Wait for the page to load (ensure the status element is present)
-        try:
-            from selenium.webdriver.support.ui import WebDriverWait
-            from selenium.webdriver.support import expected_conditions as EC
-            from selenium.webdriver.common.by import By
-            from selenium.common.exceptions import TimeoutException
-            
-            WebDriverWait(browser_driver, 3).until(
-                EC.presence_of_element_located((By.XPATH, "//div[@role='status' and contains(@aria-live, 'polite')]"))
+                new_season = EnhancedSeasonManager.create_enhanced_season_data(
+                    season_number=season_number,
+                    episode_count=episode_count,
+                    aired_episodes=aired_on_or_after_anchor,
+                    confirmed_episodes=[],
+                    failed_episodes=[],
+                    unprocessed_episodes=unprocessed,
+                    is_discrepant=False
+                )
+                new_season['status'] = 'processing' if unprocessed or (aired_on_or_after_anchor < episode_count) else 'pending'
+                existing_seasons_data.append(new_season)
+                existing_season_numbers.add(season_number)
+
+        # Persist merged seasons then derive status (recompute sets status and is_in_queue)
+        existing_seasons_data.sort(key=lambda x: x.get('season_number', 0))
+        update_media_details(
+            subscription.id,
+            seasons_data=existing_seasons_data,
+            last_checked_at=datetime.utcnow(),
+            subscription_last_checked=datetime.utcnow()
+        )
+        recompute_tv_show_status(subscription.id)
+        # Add to queue when show is in processing (recompute already set is_in_queue)
+        subscription_after = get_media_by_id(subscription.id)
+        if subscription_after and subscription_after.status == 'processing':
+            media_title = f"{show_title} ({subscription.year})" if subscription.year else show_title
+            await add_tv_to_queue(
+                imdb_id or '',
+                media_title,
+                'tv',
+                subscription.extra_data or {},
+                subscription.overseerr_media_id or 0,
+                tmdb_id,
+                subscription.overseerr_request_id
             )
-            logger.info("Page load confirmed via status element.")
-        except TimeoutException:
-            logger.warning("Timeout waiting for page load status. Proceeding anyway.")
-
-        # Process all episodes (new, failed, and verify)
-        normalized_seasons = [f"Season {season_number}"]
-        confirmed_seasons = set()
-        is_tv_show = True
-        
-        # Check if all aired episodes are confirmed (including those not being processed in this run)
-        all_episodes_confirmed = len(confirmed_episodes) >= current_aired_episodes and current_aired_episodes > 0
-        
-        new_failed_episodes = []  # Track episodes that fail in this run
-        newly_confirmed_episodes = []  # Track episodes that are newly confirmed
-
-        for episode_num, episode_id, episode_type in episodes_to_process:
-            logger.info(f"Processing {episode_type} episode for {show_title} Season {season_number} {episode_id}")
-
-            # Clear and update the filter box with episode-specific filter
-            try:
-                filter_input = WebDriverWait(browser_driver, 10).until(
-                    EC.presence_of_element_located((By.ID, "query"))
-                )
-                episode_filter = f"S{season_number:02d}{episode_id}"
-                full_filter = f"{TORRENT_FILTER_REGEX} {episode_filter}"
-                type_slowly(browser_driver, filter_input, full_filter)  # Replace send_keys with slow typing
-                logger.info(f"Applied filter: {full_filter}")
-                
-                try:
-                    click_show_more_results(browser_driver, logger)
-                except TimeoutException:
-                    logger.warning("Timed out while trying to click 'Show More Results'")
-                except Exception as e:
-                    logger.error(f"Unexpected error in click_show_more_results: {e}")
-
-                # Wait for results to update
-                time.sleep(2)
-
-                # Check for existing RD (100%) using check_red_buttons
-                confirmation_flag, confirmed_seasons = check_red_buttons(
-                    browser_driver, show_title, normalized_seasons, confirmed_seasons, is_tv_show, episode_id=episode_id
-                )
-
-                if confirmation_flag:
-                    logger.success(f"{episode_id} already cached at RD (100%). Marking as confirmed.")
-                    newly_confirmed_episodes.append(episode_id)
-                    
-                    # Update database immediately with confirmed episode
-                    updated_confirmed = list(set(confirmed_episodes + [episode_id]))
-                    updated_unprocessed = [ep for ep in unprocessed_episodes if ep != episode_id]
-                    
-                    # Update the unified media record with confirmed and unprocessed episodes
-                    if subscription.overseerr_request_id:
-                        from seerr.unified_media_manager import get_media_by_overseerr_request, update_media_details
-                        media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                        if media_record:
-                            seasons_data = media_record.seasons_data or []
-                            updated_seasons = []
-                            
-                            for season_data in seasons_data:
-                                if season_data.get('season_number') == season_number:
-                                    season_data['confirmed_episodes'] = updated_confirmed
-                                    season_data['unprocessed_episodes'] = updated_unprocessed
-                                    season_data['updated_at'] = datetime.utcnow().isoformat()
-                                updated_seasons.append(season_data)
-                            
-                            update_media_details(
-                                media_record.id,
-                                seasons_data=updated_seasons
-                            )
-                    
-                    # Update local lists for consistency
-                    confirmed_episodes = updated_confirmed
-                    unprocessed_episodes = updated_unprocessed
-                    
-                    logger.info(f"Updated database: {episode_id} confirmed, {len(updated_unprocessed)} unprocessed episodes remaining")
-                    continue
-
-                # Process uncached episode
-                try:
-                    result_boxes = WebDriverWait(browser_driver, 10).until(
-                        EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class, 'border-black')]"))
-                    )
-                    episode_confirmed = False
-
-                    for i, result_box in enumerate(result_boxes, start=1):
-                        try:
-                            title_element = result_box.find_element(By.XPATH, ".//h2")
-                            title_text = title_element.text.strip()
-                            logger.info(f"Box {i} title: {title_text}")
-
-                            title_clean = clean_title(title_text, 'en')
-                            show_clean = clean_title(show_title, 'en')
-                            from fuzzywuzzy import fuzz
-                            match_ratio = fuzz.partial_ratio(title_clean, show_clean)
-                            logger.info(f"Match ratio: {match_ratio} for '{title_clean}' vs '{show_clean}'")
-                            
-                            if episode_id.lower() in title_text.lower() and match_ratio >= 50:
-                                logger.info(f"Found match for {episode_id} in box {i}: {title_text}")
-
-                                if prioritize_buttons_in_box(result_box):
-                                    logger.info(f"Successfully handled {episode_id} in box {i}")
-                                    episode_confirmed = True
-
-                                    # Verify RD status
-                                    try:
-                                        rd_button = WebDriverWait(browser_driver, 10).until(
-                                            EC.presence_of_element_located((By.XPATH, ".//button[contains(text(), 'RD (')]"))
-                                        )
-                                        rd_button_text = rd_button.text
-                                        if "RD (100%)" in rd_button_text:
-                                            logger.success(f"RD (100%) confirmed for {episode_id}. Episode fully processed.")
-                                            episode_confirmed = True
-                                            newly_confirmed_episodes.append(episode_id)
-                                            
-                                            # Update database immediately with confirmed episode
-                                            updated_confirmed = list(set(confirmed_episodes + [episode_id]))
-                                            updated_unprocessed = [ep for ep in unprocessed_episodes if ep != episode_id]
-                                            
-                                            # Update the unified media record with confirmed and unprocessed episodes
-                                            if subscription.overseerr_request_id:
-                                                from seerr.unified_media_manager import get_media_by_overseerr_request, update_media_details
-                                                media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                                                if media_record:
-                                                    seasons_data = media_record.seasons_data or []
-                                                    updated_seasons = []
-                                                    
-                                                    for season_data in seasons_data:
-                                                        if season_data.get('season_number') == season_number:
-                                                            season_data['confirmed_episodes'] = updated_confirmed
-                                                            season_data['unprocessed_episodes'] = updated_unprocessed
-                                                            season_data['updated_at'] = datetime.utcnow().isoformat()
-                                                        updated_seasons.append(season_data)
-                                                    
-                                                    update_media_details(
-                                                        media_record.id,
-                                                        seasons_data=updated_seasons
-                                                    )
-                                            
-                                            # Update local lists for consistency
-                                            confirmed_episodes = updated_confirmed
-                                            unprocessed_episodes = updated_unprocessed
-                                            
-                                            # Update completion status
-                                            all_episodes_confirmed = len(confirmed_episodes) >= current_aired_episodes and current_aired_episodes > 0
-                                            
-                                            logger.info(f"Updated database: {episode_id} confirmed, {len(updated_unprocessed)} unprocessed episodes remaining")
-                                            break
-                                        elif "RD (0%)" in rd_button_text:
-                                            logger.warning(f"RD (0%) detected for {episode_id}. Undoing and skipping.")
-                                            rd_button.click()
-                                            episode_confirmed = False
-                                            continue
-                                    except TimeoutException:
-                                        logger.warning(f"Timeout waiting for RD status for {episode_id}")
-                                        continue
-                                else:
-                                    logger.warning(f"Failed to handle buttons for {episode_id} in box {i}")
-
-                        except Exception as e:
-                            logger.warning(f"Error processing box {i} for {episode_id}: {e}")
-
-                    if not episode_confirmed:
-                        logger.error(f"Failed to confirm {episode_id} for {show_title} Season {season_number}")
-                        new_failed_episodes.append(episode_id)
-                        all_episodes_confirmed = False
-                        
-                        # Update database immediately with failed episode
-                        updated_failed = list(set(failed_episodes + [episode_id]))
-                        updated_unprocessed = [ep for ep in unprocessed_episodes if ep != episode_id]
-                        
-                        # Update the unified media record with failed and unprocessed episodes
-                        if subscription.overseerr_request_id:
-                            from seerr.unified_media_manager import get_media_by_overseerr_request, update_media_details
-                            media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                            if media_record:
-                                seasons_data = media_record.seasons_data or []
-                                updated_seasons = []
-                                
-                                for season_data in seasons_data:
-                                    if season_data.get('season_number') == season_number:
-                                        season_data['failed_episodes'] = updated_failed
-                                        season_data['unprocessed_episodes'] = updated_unprocessed
-                                        season_data['updated_at'] = datetime.utcnow().isoformat()
-                                    updated_seasons.append(season_data)
-                                
-                                update_media_details(
-                                    media_record.id,
-                                    seasons_data=updated_seasons
-                                )
-                        
-                        # Update local lists for consistency
-                        failed_episodes = updated_failed
-                        unprocessed_episodes = updated_unprocessed
-                        
-                        # Update completion status
-                        all_episodes_confirmed = len(confirmed_episodes) >= current_aired_episodes and current_aired_episodes > 0
-                        
-                        logger.info(f"Updated database: {episode_id} failed, {len(updated_unprocessed)} unprocessed episodes remaining")
-
-                except TimeoutException:
-                    logger.warning(f"No result boxes found for {episode_id}")
-                    new_failed_episodes.append(episode_id)
-                    all_episodes_confirmed = False
-                    
-                    # Update database immediately with failed episode
-                    updated_failed = list(set(failed_episodes + [episode_id]))
-                    updated_unprocessed = [ep for ep in unprocessed_episodes if ep != episode_id]
-                    
-                    # Update the unified media record with failed and unprocessed episodes
-                    if subscription.overseerr_request_id:
-                        from seerr.unified_media_manager import get_media_by_overseerr_request, update_media_details
-                        media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                        if media_record:
-                            seasons_data = media_record.seasons_data or []
-                            updated_seasons = []
-                            
-                            for season_data in seasons_data:
-                                if season_data.get('season_number') == season_number:
-                                    season_data['failed_episodes'] = updated_failed
-                                    season_data['unprocessed_episodes'] = updated_unprocessed
-                                    season_data['updated_at'] = datetime.utcnow().isoformat()
-                                updated_seasons.append(season_data)
-                            
-                            update_media_details(
-                                media_record.id,
-                                seasons_data=updated_seasons
-                            )
-                    
-                    # Update local lists for consistency
-                    failed_episodes = updated_failed
-                    unprocessed_episodes = updated_unprocessed
-                    
-                    # Update completion status
-                    all_episodes_confirmed = len(confirmed_episodes) >= current_aired_episodes and current_aired_episodes > 0
-                    
-                    logger.info(f"Updated database: {episode_id} failed (timeout), {len(updated_unprocessed)} unprocessed episodes remaining")
-
-            except TimeoutException:
-                logger.error(f"Filter input with ID 'query' not found for {episode_id}")
-                new_failed_episodes.append(episode_id)
-                all_episodes_confirmed = False
-                
-                # Update database immediately with failed episode
-                updated_failed = list(set(failed_episodes + [episode_id]))
-                updated_unprocessed = [ep for ep in unprocessed_episodes if ep != episode_id]
-                
-                # Update the unified media record with failed and unprocessed episodes
-                if subscription.overseerr_request_id:
-                    from seerr.unified_media_manager import get_media_by_overseerr_request, update_media_details
-                    media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                    if media_record:
-                        seasons_data = media_record.seasons_data or []
-                        updated_seasons = []
-                        
-                        for season_data in seasons_data:
-                            if season_data.get('season_number') == season_number:
-                                season_data['failed_episodes'] = updated_failed
-                                season_data['unprocessed_episodes'] = updated_unprocessed
-                                season_data['updated_at'] = datetime.utcnow().isoformat()
-                            updated_seasons.append(season_data)
-                        
-                        update_media_details(
-                            media_record.id,
-                            seasons_data=updated_seasons
-                        )
-                
-                # Update local lists for consistency
-                failed_episodes = updated_failed
-                unprocessed_episodes = updated_unprocessed
-                
-                # Update completion status
-                all_episodes_confirmed = len(confirmed_episodes) >= current_aired_episodes and current_aired_episodes > 0
-                
-                logger.info(f"Updated database: {episode_id} failed (filter timeout), {len(updated_unprocessed)} unprocessed episodes remaining")
-
-        # Reset the filter
-        try:
-            filter_input = browser_driver.find_element(By.ID, "query")
-            type_slowly(browser_driver, filter_input, TORRENT_FILTER_REGEX)  # Slow typing for reset
-            logger.info(f"Reset filter to default: {TORRENT_FILTER_REGEX}")
-        except NoSuchElementException:
-            logger.warning("Could not reset filter to default using ID 'query'")
-
-        # Log final processing summary (database was updated live during processing)
-        logger.info(f"Processing complete for {show_title} Season {season_number}:")
-        logger.info(f"  - Confirmed episodes: {len(confirmed_episodes)} - {confirmed_episodes}")
-        logger.info(f"  - Unprocessed episodes: {len(unprocessed_episodes)} - {unprocessed_episodes}")
-        logger.info(f"  - Failed episodes: {len(failed_episodes)} - {failed_episodes}")
-
-        if all_episodes_confirmed:
-            logger.info(f"Successfully processed all episodes for {show_title} Season {season_number}")
-            
-            # Update processed media status to completed if all episodes are confirmed
-            if USE_DATABASE and subscription.overseerr_request_id:
-                from seerr.unified_media_manager import update_media_processing_status, get_media_by_overseerr_request, update_media_details
-                
-                # Get the media record using the subscription's overseerr_request_id
-                media_record = get_media_by_overseerr_request(subscription.overseerr_request_id)
-                if media_record:
-                    # Update the season status to completed in seasons_data
-                    seasons_data = media_record.seasons_data or []
-                    updated_seasons = []
-                    
-                    for season_data in seasons_data:
-                        if season_data.get('season_number') == season_number:
-                            # Mark this season as completed
-                            season_data['status'] = 'completed'
-                            season_data['is_discrepant'] = False
-                            season_data['updated_at'] = datetime.utcnow().isoformat()
-                            season_data['confirmed_episodes'] = confirmed_episodes
-                            season_data['unprocessed_episodes'] = []
-                        updated_seasons.append(season_data)
-                    
-                    # Check if all seasons are now completed
-                    all_seasons_completed = True
-                    for season_data in updated_seasons:
-                        if season_data.get('status') != 'completed':
-                            all_seasons_completed = False
-                            break
-                    
-                    # Update the media record
-                    update_media_details(
-                        media_record.id,
-                        seasons_data=updated_seasons,
-                        is_subscribed=True,
-                        subscription_active=True,
-                        subscription_last_checked=datetime.utcnow()
-                    )
-                    
-                    # If all seasons are completed, mark the overall show as completed
-                    if all_seasons_completed:
-                        update_media_processing_status(
-                            media_record.id,
-                            'completed',
-                            'all_seasons_completed',
-                            extra_data={'all_episodes_confirmed': True}
-                        )
-                        logger.success(f"All seasons completed for {show_title}. Marked show as completed.")
-                    
-                    logger.info(f"Updated processed media status to completed and set subscription for {show_title} Season {season_number}")
-        else:
-            logger.warning(f"Failed to process some episodes for {show_title} Season {season_number}. Failed episodes: {new_failed_episodes}")
+            logger.info(f"Subscription check: queued {show_title} for new episodes.")
 
     logger.info("Completed show subscription check.")
 
@@ -4082,6 +3631,8 @@ async def search_individual_episodes(imdb_id, movie_title, season_number, season
                     # Update the TV show with the modified seasons data
                     tv_show.seasons_data = updated_seasons_data
                     db.commit()
+                    from seerr.unified_media_manager import recompute_tv_show_status
+                    recompute_tv_show_status(tv_show.id)
                     logger.info(f"Updated database with {len(failed_episodes)} failed episodes for {movie_title} Season {season_number}")
                 else:
                     logger.warning(f"Could not find TV show or seasons data for {movie_title} Season {season_number}")

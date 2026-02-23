@@ -286,6 +286,8 @@ class DatabaseQueueManager:
                                 success = EnhancedSeasonManager.update_tv_show_seasons(item.tmdb_id, seasons_data, item.title)
                                 
                                 if success:
+                                    from seerr.unified_media_manager import recompute_tv_show_status
+                                    recompute_tv_show_status(item.id)
                                     log_success("Database Queue Manager", f"Successfully updated {item.title} with enhanced season tracking", 
                                               module="database_queue_manager", function="_queue_item")
                                 else:

@@ -363,6 +363,7 @@ def init_database():
                 SystemConfig(config_key="headless_mode", config_value="true", config_type="bool", description="Run browser in headless mode"),
                 SystemConfig(config_key="enable_automatic_background_task", config_value="false", config_type="bool", description="Enable automatic background processing"),
                 SystemConfig(config_key="enable_show_subscription_task", config_value="false", config_type="bool", description="Enable TV show subscription monitoring"),
+                SystemConfig(config_key="subscription_check_interval_minutes", config_value="1440", config_type="int", description="Interval in minutes for checking subscribed shows for new episodes (default 1440 = once per day)"),
             ]
             for config in default_configs:
                 db.add(config)

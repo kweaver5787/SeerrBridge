@@ -332,6 +332,8 @@ def update_database_with_confirmed_episodes(movie_title, season_num, confirmed_e
                     media_record.seasons_data = seasons_data
                     media_record.updated_at = datetime.utcnow()
                     db.commit()
+                    from seerr.unified_media_manager import recompute_tv_show_status
+                    recompute_tv_show_status(media_record.id)
                     logger.success(f"Updated database with confirmed episodes for {movie_title} Season {season_num}")
                 else:
                     logger.info(f"No new episodes to confirm for {movie_title} Season {season_num}")
@@ -432,6 +434,7 @@ def try_complete_season_pack(driver, movie_title, season_num, normalized_seasons
         logger.info(f"No RD (100%) found in Complete results. Processing result boxes for Season {season_num}")
         
         # Get result boxes after clicking Complete
+        overlay_xpath = "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"
         try:
             result_boxes = WebDriverWait(driver, 5).until(
                 EC.presence_of_all_elements_located((By.XPATH, "//div[contains(@class, 'border-2')]"))
@@ -441,6 +444,18 @@ def try_complete_season_pack(driver, movie_title, season_num, normalized_seasons
             # Process each result box ONE BY ONE until success
             for i, result_box in enumerate(result_boxes, 1):
                 try:
+                    # Wait for loading overlay to disappear so clicks are not intercepted
+                    try:
+                        WebDriverWait(driver, 15).until(
+                            EC.invisibility_of_element_located((By.XPATH, overlay_xpath))
+                        )
+                    except TimeoutException:
+                        logger.warning(f"Overlay still visible before processing box {i}, continuing anyway")
+                    # Re-find result boxes to avoid stale references
+                    result_boxes = driver.find_elements(By.XPATH, "//div[contains(@class, 'border-2')]")
+                    if i > len(result_boxes):
+                        continue
+                    result_box = result_boxes[i - 1]
                     # Extract title from result box
                     title_element = result_box.find_element(By.XPATH, ".//h2")
                     title_text = title_element.text.strip()
@@ -513,58 +528,82 @@ def try_complete_season_pack(driver, movie_title, season_num, normalized_seasons
                             
                             # For extra verification, click the badge to open modal and check the file list
                             try:
+                                _wait_for_overlay_gone(driver)
                                 complete_badge.click()
                                 logger.info(f"Opened Complete modal for box {i}")
                                 time.sleep(2)  # Wait for modal to open
                                 
-                                # Try to parse the modal to verify files
+                                # Try to parse the modal to verify files (optional - modal structure may change)
                                 try:
-                                    # Find the modal
-                                    modal = driver.find_element(By.XPATH, "//div[contains(@class, 'max-h-[90vh]')]")
-                                    
-                                    # Get all file rows in the modal
-                                    file_rows = modal.find_elements(By.XPATH, ".//tr[@class='bg-gray-800 font-bold hover:bg-gray-700 rounded']")
-                                    actual_file_count = len(file_rows)
-                                    logger.info(f"Modal shows {actual_file_count} files in the complete pack")
-                                    
-                                    # Verify the actual file count
-                                    if expected_episode_count and actual_file_count != expected_episode_count:
-                                        logger.warning(f"Modal verification: box {i} has {actual_file_count} files but expected {expected_episode_count}. Skipping.")
-                                        # Close modal
+                                    # Find the modal (try multiple selectors for slow load or DMM UI changes)
+                                    modal = None
+                                    for modal_xpath in [
+                                        "//div[contains(@class, 'max-h-[90vh]')]",
+                                        "//div[contains(@class, 'fixed') and contains(@class, 'inset-0')]//div[contains(@class, 'max-h')]",
+                                        "//div[@role='dialog']",
+                                    ]:
                                         try:
-                                            close_button = driver.find_element(By.XPATH, "//button[contains(text(), '×')]")
-                                            close_button.click()
-                                        except:
-                                            # Try clicking overlay if no close button
+                                            modal = WebDriverWait(driver, 5).until(
+                                                EC.presence_of_element_located((By.XPATH, modal_xpath))
+                                            )
+                                            break
+                                        except TimeoutException:
+                                            continue
+                                    if modal is None:
+                                        logger.warning(f"Could not find modal for box {i} (selector may have changed), skipping verification")
+                                        try:
                                             overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
                                             overlay.click()
                                             time.sleep(1)
-                                        continue
-                                    
-                                    # Close the modal before proceeding by pressing ESC
-                                    logger.info(f"Closing Complete modal for box {i}...")
-                                    try:
-                                        # Press ESC to close modal
-                                        driver.switch_to.active_element.send_keys(Keys.ESCAPE)
-                                        logger.info(f"Pressed ESC to close Complete modal for box {i}")
-                                        
-                                        # Wait for modal to disappear (up to 5 seconds)
-                                        WebDriverWait(driver, 5).until(
-                                            EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
-                                        )
-                                        logger.info(f"Modal closed for box {i}")
-                                    except:
-                                        # Fallback: try clicking overlay
-                                        try:
-                                            overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
-                                            overlay.click()
-                                            logger.info(f"Clicked overlay to close modal for box {i}")
                                             WebDriverWait(driver, 5).until(
                                                 EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
                                             )
-                                            logger.info(f"Modal closed for box {i} via overlay click")
+                                        except Exception:
+                                            pass
+                                    else:
+                                        # Get all file rows in the modal
+                                        file_rows = modal.find_elements(By.XPATH, ".//tr[@class='bg-gray-800 font-bold hover:bg-gray-700 rounded']")
+                                        actual_file_count = len(file_rows)
+                                        logger.info(f"Modal shows {actual_file_count} files in the complete pack")
+                                        
+                                        # Verify the actual file count
+                                        if expected_episode_count and actual_file_count != expected_episode_count:
+                                            logger.warning(f"Modal verification: box {i} has {actual_file_count} files but expected {expected_episode_count}. Skipping.")
+                                            # Close modal
+                                            try:
+                                                close_button = driver.find_element(By.XPATH, "//button[contains(text(), '×')]")
+                                                close_button.click()
+                                            except:
+                                                # Try clicking overlay if no close button
+                                                overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
+                                                overlay.click()
+                                                time.sleep(1)
+                                            continue
+                                        
+                                        # Close the modal before proceeding by pressing ESC
+                                        logger.info(f"Closing Complete modal for box {i}...")
+                                        try:
+                                            # Press ESC to close modal
+                                            driver.switch_to.active_element.send_keys(Keys.ESCAPE)
+                                            logger.info(f"Pressed ESC to close Complete modal for box {i}")
+                                            
+                                            # Wait for modal to disappear (up to 5 seconds)
+                                            WebDriverWait(driver, 5).until(
+                                                EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
+                                            )
+                                            logger.info(f"Modal closed for box {i}")
                                         except:
-                                            logger.warning(f"Could not verify modal closure for box {i}, proceeding anyway")
+                                            # Fallback: try clicking overlay
+                                            try:
+                                                overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
+                                                overlay.click()
+                                                logger.info(f"Clicked overlay to close modal for box {i}")
+                                                WebDriverWait(driver, 5).until(
+                                                    EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
+                                                )
+                                                logger.info(f"Modal closed for box {i} via overlay click")
+                                            except:
+                                                logger.warning(f"Could not verify modal closure for box {i}, proceeding anyway")
                                 except Exception as modal_error:
                                     logger.warning(f"Could not parse modal for box {i}: {modal_error}")
                                     # Try to close modal anyway
@@ -583,14 +622,20 @@ def try_complete_season_pack(driver, movie_title, season_num, normalized_seasons
                         logger.warning(f"Error verifying complete pack in box {i}: {verify_error}")
                         continue
                     
+                    # Wait for overlay to disappear and re-find box to avoid stale reference after modal
+                    _wait_for_overlay_gone(driver, timeout=10)
+                    result_boxes = driver.find_elements(By.XPATH, "//div[contains(@class, 'border-2')]")
+                    if i > len(result_boxes):
+                        continue
+                    result_box = result_boxes[i - 1]
                     # Click Instant RD button in this box
                     if prioritize_buttons_in_box(result_box):
                         logger.info(f"Successfully clicked Instant RD button in box {i}")
                         
                         # Check RD status after clicking (within the result box)
                         try:
-                            rd_button = WebDriverWait(result_box, 5).until(
-                                EC.presence_of_element_located((By.XPATH, ".//button[contains(text(), 'RD (')]"))
+                            rd_button = WebDriverWait(driver, 5).until(
+                                lambda d: result_box.find_element(By.XPATH, ".//button[contains(text(), 'RD (')]")
                             )
                             rd_button_text = rd_button.text
                             logger.info(f"RD button text after clicking in box {i}: {rd_button_text}")
@@ -836,6 +881,17 @@ def check_all_rd_buttons(driver, movie_title, normalized_seasons, confirmed_seas
         return False, confirmed_seasons
 
 
+def _wait_for_overlay_gone(driver, timeout=15):
+    """Wait for the DMM loading/modal overlay to disappear so clicks are not intercepted."""
+    overlay_xpath = "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"
+    try:
+        WebDriverWait(driver, timeout).until(
+            EC.invisibility_of_element_located((By.XPATH, overlay_xpath))
+        )
+    except TimeoutException:
+        pass
+
+
 def check_page_loading_state(driver, season_num, strategy_name):
     """
     Check if the page is still loading or has finished loading results.
@@ -1024,9 +1080,12 @@ def try_with_extras_pack(driver, movie_title, season_num, normalized_seasons):
         else:
             logger.warning(f"Could not extract file count from With extras button text: '{extras_button_text}'")
         
-        # Log page state before clicking
-        
+        # Wait for overlay to disappear so click is not intercepted
+        _wait_for_overlay_gone(driver)
         logger.info(f"Clicking With extras button for Season {season_num}")
+        extras_button = WebDriverWait(driver, 15).until(
+            EC.element_to_be_clickable((By.XPATH, "//span[contains(@class, 'bg-blue-900') and contains(text(), 'With extras')]"))
+        )
         extras_button.click()
         
         # Click "Show more results" button if available to load all results
@@ -1087,6 +1146,7 @@ def try_with_extras_pack(driver, movie_title, season_num, normalized_seasons):
         # No RD (100%) exists, process result boxes one by one until we get a success
         logger.info(f"No RD (100%) found in With extras results. Processing result boxes for Season {season_num}")
         
+        overlay_xpath = "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"
         # Get result boxes after clicking With extras
         try:
             result_boxes = WebDriverWait(driver, 5).until(
@@ -1097,6 +1157,17 @@ def try_with_extras_pack(driver, movie_title, season_num, normalized_seasons):
             # Process each result box ONE BY ONE until success
             for i, result_box in enumerate(result_boxes, 1):
                 try:
+                    # Wait for loading overlay to disappear
+                    try:
+                        WebDriverWait(driver, 15).until(
+                            EC.invisibility_of_element_located((By.XPATH, overlay_xpath))
+                        )
+                    except TimeoutException:
+                        logger.warning(f"Overlay still visible before processing With extras box {i}, continuing anyway")
+                    result_boxes = driver.find_elements(By.XPATH, "//div[contains(@class, 'border-2')]")
+                    if i > len(result_boxes):
+                        continue
+                    result_box = result_boxes[i - 1]
                     # Extract title from result box
                     title_element = result_box.find_element(By.XPATH, ".//h2")
                     title_text = title_element.text.strip()
@@ -1169,58 +1240,82 @@ def try_with_extras_pack(driver, movie_title, season_num, normalized_seasons):
                             
                             # For extra verification, click the badge to open modal and check the file list
                             try:
+                                _wait_for_overlay_gone(driver)
                                 complete_badge.click()
                                 logger.info(f"Opened Complete modal for box {i}")
                                 time.sleep(2)  # Wait for modal to open
                                 
-                                # Try to parse the modal to verify files
+                                # Try to parse the modal to verify files (optional - modal structure may change)
                                 try:
-                                    # Find the modal
-                                    modal = driver.find_element(By.XPATH, "//div[contains(@class, 'max-h-[90vh]')]")
-                                    
-                                    # Get all file rows in the modal
-                                    file_rows = modal.find_elements(By.XPATH, ".//tr[@class='bg-gray-800 font-bold hover:bg-gray-700 rounded']")
-                                    actual_file_count = len(file_rows)
-                                    logger.info(f"Modal shows {actual_file_count} files in the complete pack")
-                                    
-                                    # Verify the actual file count
-                                    if expected_episode_count and actual_file_count != expected_episode_count:
-                                        logger.warning(f"Modal verification: box {i} has {actual_file_count} files but expected {expected_episode_count}. Skipping.")
-                                        # Close modal
+                                    # Find the modal (try multiple selectors for slow load or DMM UI changes)
+                                    modal = None
+                                    for modal_xpath in [
+                                        "//div[contains(@class, 'max-h-[90vh]')]",
+                                        "//div[contains(@class, 'fixed') and contains(@class, 'inset-0')]//div[contains(@class, 'max-h')]",
+                                        "//div[@role='dialog']",
+                                    ]:
                                         try:
-                                            close_button = driver.find_element(By.XPATH, "//button[contains(text(), '×')]")
-                                            close_button.click()
-                                        except:
-                                            # Try clicking overlay if no close button
+                                            modal = WebDriverWait(driver, 5).until(
+                                                EC.presence_of_element_located((By.XPATH, modal_xpath))
+                                            )
+                                            break
+                                        except TimeoutException:
+                                            continue
+                                    if modal is None:
+                                        logger.warning(f"Could not find modal for box {i} (selector may have changed), skipping verification")
+                                        try:
                                             overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
                                             overlay.click()
                                             time.sleep(1)
-                                        continue
-                                    
-                                    # Close the modal before proceeding by pressing ESC
-                                    logger.info(f"Closing Complete modal for box {i}...")
-                                    try:
-                                        # Press ESC to close modal
-                                        driver.switch_to.active_element.send_keys(Keys.ESCAPE)
-                                        logger.info(f"Pressed ESC to close Complete modal for box {i}")
-                                        
-                                        # Wait for modal to disappear (up to 5 seconds)
-                                        WebDriverWait(driver, 5).until(
-                                            EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
-                                        )
-                                        logger.info(f"Modal closed for box {i}")
-                                    except:
-                                        # Fallback: try clicking overlay
-                                        try:
-                                            overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
-                                            overlay.click()
-                                            logger.info(f"Clicked overlay to close modal for box {i}")
                                             WebDriverWait(driver, 5).until(
                                                 EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
                                             )
-                                            logger.info(f"Modal closed for box {i} via overlay click")
+                                        except Exception:
+                                            pass
+                                    else:
+                                        # Get all file rows in the modal
+                                        file_rows = modal.find_elements(By.XPATH, ".//tr[@class='bg-gray-800 font-bold hover:bg-gray-700 rounded']")
+                                        actual_file_count = len(file_rows)
+                                        logger.info(f"Modal shows {actual_file_count} files in the complete pack")
+                                        
+                                        # Verify the actual file count
+                                        if expected_episode_count and actual_file_count != expected_episode_count:
+                                            logger.warning(f"Modal verification: box {i} has {actual_file_count} files but expected {expected_episode_count}. Skipping.")
+                                            # Close modal
+                                            try:
+                                                close_button = driver.find_element(By.XPATH, "//button[contains(text(), '×')]")
+                                                close_button.click()
+                                            except:
+                                                # Try clicking overlay if no close button
+                                                overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
+                                                overlay.click()
+                                                time.sleep(1)
+                                            continue
+                                        
+                                        # Close the modal before proceeding by pressing ESC
+                                        logger.info(f"Closing Complete modal for box {i}...")
+                                        try:
+                                            # Press ESC to close modal
+                                            driver.switch_to.active_element.send_keys(Keys.ESCAPE)
+                                            logger.info(f"Pressed ESC to close Complete modal for box {i}")
+                                            
+                                            # Wait for modal to disappear (up to 5 seconds)
+                                            WebDriverWait(driver, 5).until(
+                                                EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
+                                            )
+                                            logger.info(f"Modal closed for box {i}")
                                         except:
-                                            logger.warning(f"Could not verify modal closure for box {i}, proceeding anyway")
+                                            # Fallback: try clicking overlay
+                                            try:
+                                                overlay = driver.find_element(By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]")
+                                                overlay.click()
+                                                logger.info(f"Clicked overlay to close modal for box {i}")
+                                                WebDriverWait(driver, 5).until(
+                                                    EC.invisibility_of_element_located((By.XPATH, "//div[contains(@class, 'fixed inset-0') and contains(@class, 'bg-black')]"))
+                                                )
+                                                logger.info(f"Modal closed for box {i} via overlay click")
+                                            except:
+                                                logger.warning(f"Could not verify modal closure for box {i}, proceeding anyway")
                                 except Exception as modal_error:
                                     logger.warning(f"Could not parse modal for box {i}: {modal_error}")
                                     # Try to close modal anyway
@@ -1239,14 +1334,20 @@ def try_with_extras_pack(driver, movie_title, season_num, normalized_seasons):
                         logger.warning(f"Error verifying complete pack in box {i}: {verify_error}")
                         continue
                     
+                    # Wait for overlay to disappear and re-find box to avoid stale reference after modal
+                    _wait_for_overlay_gone(driver, timeout=10)
+                    result_boxes = driver.find_elements(By.XPATH, "//div[contains(@class, 'border-2')]")
+                    if i > len(result_boxes):
+                        continue
+                    result_box = result_boxes[i - 1]
                     # Click Instant RD button in this box
                     if prioritize_buttons_in_box(result_box):
                         logger.info(f"Successfully clicked Instant RD button in box {i}")
                         
                         # Check RD status after clicking (within the result box)
                         try:
-                            rd_button = WebDriverWait(result_box, 5).until(
-                                EC.presence_of_element_located((By.XPATH, ".//button[contains(text(), 'RD (')]"))
+                            rd_button = WebDriverWait(driver, 5).until(
+                                lambda d: result_box.find_element(By.XPATH, ".//button[contains(text(), 'RD (')]")
                             )
                             rd_button_text = rd_button.text
                             logger.info(f"RD button text after clicking in box {i}: {rd_button_text}")
@@ -1450,6 +1551,8 @@ def process_individual_episodes_fallback(driver, movie_title, season_num, normal
                                     media_record.id,
                                     seasons_data=updated_seasons
                                 )
+                                from seerr.unified_media_manager import recompute_tv_show_status
+                                recompute_tv_show_status(media_record.id)
                                 logger.info(f"Updated database: {episode_id} confirmed (already cached)")
                         finally:
                             db.close()
@@ -1571,6 +1674,8 @@ def process_individual_episodes_fallback(driver, movie_title, season_num, normal
                                         media_record.id,
                                         seasons_data=updated_seasons
                                     )
+                                    from seerr.unified_media_manager import recompute_tv_show_status
+                                    recompute_tv_show_status(media_record.id)
                                     logger.info(f"Updated database: {episode_id} confirmed")
                             finally:
                                 db.close()
@@ -1619,6 +1724,8 @@ def process_individual_episodes_fallback(driver, movie_title, season_num, normal
                                         media_record.id,
                                         seasons_data=updated_seasons
                                     )
+                                    from seerr.unified_media_manager import recompute_tv_show_status
+                                    recompute_tv_show_status(media_record.id)
                                     logger.info(f"Updated database: {episode_id} marked as failed")
                             finally:
                                 db.close()
@@ -1750,6 +1857,8 @@ def mark_all_episodes_as_confirmed(movie_title, season_num):
             )
             
             if success:
+                from seerr.unified_media_manager import recompute_tv_show_status
+                recompute_tv_show_status(media_record.id)
                 logger.success(f"Successfully updated database - Season {season_num} marked as complete with all episodes confirmed")
             else:
                 logger.error(f"Failed to update database for Season {season_num}")
@@ -1805,7 +1914,7 @@ def mark_season_as_complete(movie_title, season_num):
             
             logger.info(f"Found media record for {media_record.title} (ID: {media_record.id})")
             
-            # Update seasons_data to mark season as complete
+            # Update seasons_data: set confirmed_episodes (E01..E0N for aired), clear unprocessed/failed, then recompute show status
             if media_record.seasons_data:
                 seasons_data = media_record.seasons_data
                 updated = False
@@ -1814,11 +1923,19 @@ def mark_season_as_complete(movie_title, season_num):
                 
                 for season_data in seasons_data:
                     if season_data.get('season_number') == season_num:
+                        aired = season_data.get('aired_episodes', 0)
+                        if aired > 0:
+                            season_data['confirmed_episodes'] = [f"E{str(i).zfill(2)}" for i in range(1, aired + 1)]
+                        else:
+                            season_data['confirmed_episodes'] = season_data.get('confirmed_episodes', [])
+                        season_data['unprocessed_episodes'] = []
+                        season_data['failed_episodes'] = []
                         season_data['is_complete'] = True
+                        season_data['status'] = 'completed'
                         season_data['completion_method'] = 'complete_pack'
                         season_data['updated_at'] = datetime.utcnow().isoformat()
                         updated = True
-                        logger.info(f"Marked Season {season_num} as complete with complete pack")
+                        logger.info(f"Marked Season {season_num} as complete with complete pack (confirmed E01..E{str(aired).zfill(2)})")
                     else:
                         logger.info(f"Skipping season {season_data.get('season_number')} (looking for {season_num})")
                 
@@ -1826,7 +1943,9 @@ def mark_season_as_complete(movie_title, season_num):
                     media_record.seasons_data = seasons_data
                     media_record.updated_at = datetime.utcnow()
                     db.commit()
-                    logger.success(f"Updated database - Season {season_num} marked as complete")
+                    from seerr.unified_media_manager import recompute_tv_show_status
+                    recompute_tv_show_status(media_record.id)
+                    logger.success(f"Updated database - Season {season_num} marked as complete; show status recomputed")
                 else:
                     logger.warning(f"No season data found for Season {season_num} in {len(seasons_data)} seasons")
             else:
@@ -2227,6 +2346,8 @@ def process_season_page(driver, movie_title, season_num, normalized_seasons, tmd
                                 media_record.id,
                                 seasons_data=seasons_data
                             )
+                            from seerr.unified_media_manager import recompute_tv_show_status
+                            recompute_tv_show_status(media_record.id)
                             logger.info(f"Updated database with all aired episodes for Season {season_num}")
                 finally:
                     db.close()
@@ -2637,6 +2758,8 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                                 media_record.updated_at = datetime.utcnow()
                                 
                                 db.commit()
+                                from seerr.unified_media_manager import recompute_tv_show_status
+                                recompute_tv_show_status(media_record.id)
                                 logger.info(f"Updated {len(new_seasons_data)} seasons in database for {movie_title} (replaced invalid data)")
                                 
                                 # Check if any seasons are not ready for processing (haven't aired)
@@ -3500,16 +3623,11 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                                                         try:
                                                             from seerr.enhanced_season_manager import EnhancedSeasonManager
                                                             EnhancedSeasonManager.update_tv_show_seasons(tmdb_id, [season_details], movie_title)
+                                                            from seerr.unified_media_manager import get_media_by_tmdb, recompute_tv_show_status
+                                                            media_record = get_media_by_tmdb(tmdb_id, 'tv')
+                                                            if media_record:
+                                                                recompute_tv_show_status(media_record.id)
                                                             logger.info(f"Marked season {season_number} as discrepant in database for fallback processing")
-                                                            
-                                                            # Ensure the database transaction is committed before proceeding
-                                                            from seerr.database import get_db
-                                                            db_commit = get_db()
-                                                            try:
-                                                                db_commit.commit()
-                                                                logger.info(f"Database transaction committed for season {season_number}")
-                                                            finally:
-                                                                db_commit.close()
                                                         except Exception as e:
                                                             logger.error(f"Failed to update database with discrepant season: {e}")
                                                         break
@@ -3541,16 +3659,11 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                                         try:
                                             from seerr.enhanced_season_manager import EnhancedSeasonManager
                                             EnhancedSeasonManager.update_tv_show_seasons(tmdb_id, [season_details], movie_title)
+                                            from seerr.unified_media_manager import get_media_by_tmdb, recompute_tv_show_status
+                                            media_record = get_media_by_tmdb(tmdb_id, 'tv')
+                                            if media_record:
+                                                recompute_tv_show_status(media_record.id)
                                             logger.info(f"Created fallback season {season_number} entry in database")
-                                            
-                                            # Ensure the database transaction is committed before proceeding
-                                            from seerr.database import get_db
-                                            db_commit = get_db()
-                                            try:
-                                                db_commit.commit()
-                                                logger.info(f"Database transaction committed for fallback season {season_number}")
-                                            finally:
-                                                db_commit.close()
                                         except Exception as e:
                                             logger.error(f"Failed to create fallback season in database: {e}")
                                 
