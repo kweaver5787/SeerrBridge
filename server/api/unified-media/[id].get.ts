@@ -81,82 +81,108 @@ export default defineEventHandler(async (event) => {
       }
     }
     
-    // Parse seasons if they exist
-    let seasons = []
+    // Parse seasons_data from unified_media (source of truth for Python backend / mark-complete)
+    let seasonsData: any[] = []
+    if (media.seasons_data) {
+      try {
+        seasonsData = typeof media.seasons_data === 'string'
+          ? JSON.parse(media.seasons_data)
+          : media.seasons_data
+        if (!Array.isArray(seasonsData)) seasonsData = []
+      } catch (e) {
+        seasonsData = []
+      }
+    }
+    
+    // Build seasons for TV: prefer unified_media.seasons_data so mark-complete updates are visible
+    let seasons: any[] = []
     if (media.media_type === 'tv') {
-      const [seasonRows] = await db.execute(`
-        SELECT 
-          season_number,
-          episode_count,
-          aired_episodes,
-          confirmed_episodes,
-          failed_episodes,
-          unprocessed_episodes,
-          unaired_episodes,
-          is_discrepant,
-          discrepancy_reason,
-          discrepancy_details,
-          status,
-          season_details,
-          last_checked,
-          updated_at
-        FROM tv_seasons 
-        WHERE media_id = ?
-        ORDER BY season_number ASC
-      `, [id])
-      
-      seasons = (seasonRows as any[]).map(season => {
-        // Parse JSON fields
-        if (season.confirmed_episodes) {
-          try {
-            season.confirmed_episodes = JSON.parse(season.confirmed_episodes)
-          } catch (e) {
-            season.confirmed_episodes = []
-          }
-        }
+      if (seasonsData.length > 0) {
+        seasons = seasonsData.map((season: any) => ({
+          season_number: season.season_number ?? 0,
+          episode_count: season.episode_count ?? 0,
+          aired_episodes: season.aired_episodes ?? 0,
+          failed_episodes: season.failed_episodes ?? [],
+          confirmed_episodes: season.confirmed_episodes ?? [],
+          unprocessed_episodes: season.unprocessed_episodes ?? [],
+          unaired_episodes: season.unaired_episodes ?? [],
+          is_discrepant: season.is_discrepant ?? false,
+          discrepancy_reason: season.discrepancy_reason ?? null,
+          discrepancy_details: season.discrepancy_details ?? {},
+          status: season.status ?? 'unknown',
+          season_details: season,
+          last_checked: season.last_checked,
+          updated_at: season.updated_at ?? media.updated_at
+        }))
+      } else {
+        // Fallback to tv_seasons table when seasons_data is empty
+        const [seasonRows] = await db.execute(`
+          SELECT 
+            season_number,
+            episode_count,
+            aired_episodes,
+            confirmed_episodes,
+            failed_episodes,
+            unprocessed_episodes,
+            unaired_episodes,
+            is_discrepant,
+            discrepancy_reason,
+            discrepancy_details,
+            status,
+            season_details,
+            last_checked,
+            updated_at
+          FROM tv_seasons 
+          WHERE media_id = ?
+          ORDER BY season_number ASC
+        `, [id])
         
-        if (season.failed_episodes) {
-          try {
-            season.failed_episodes = JSON.parse(season.failed_episodes)
-          } catch (e) {
-            season.failed_episodes = []
+        seasons = (seasonRows as any[]).map(season => {
+          if (season.confirmed_episodes) {
+            try {
+              season.confirmed_episodes = JSON.parse(season.confirmed_episodes)
+            } catch (e) {
+              season.confirmed_episodes = []
+            }
           }
-        }
-        
-        if (season.unprocessed_episodes) {
-          try {
-            season.unprocessed_episodes = JSON.parse(season.unprocessed_episodes)
-          } catch (e) {
-            season.unprocessed_episodes = []
+          if (season.failed_episodes) {
+            try {
+              season.failed_episodes = JSON.parse(season.failed_episodes)
+            } catch (e) {
+              season.failed_episodes = []
+            }
           }
-        }
-        
-        if (season.unaired_episodes) {
-          try {
-            season.unaired_episodes = JSON.parse(season.unaired_episodes)
-          } catch (e) {
-            season.unaired_episodes = []
+          if (season.unprocessed_episodes) {
+            try {
+              season.unprocessed_episodes = JSON.parse(season.unprocessed_episodes)
+            } catch (e) {
+              season.unprocessed_episodes = []
+            }
           }
-        }
-        
-        if (season.discrepancy_details) {
-          try {
-            season.discrepancy_details = JSON.parse(season.discrepancy_details)
-          } catch (e) {
-            season.discrepancy_details = null
+          if (season.unaired_episodes) {
+            try {
+              season.unaired_episodes = JSON.parse(season.unaired_episodes)
+            } catch (e) {
+              season.unaired_episodes = []
+            }
           }
-        }
-        
-        if (season.season_details) {
-          try {
-            season.season_details = JSON.parse(season.season_details)
-          } catch (e) {
-            season.season_details = null
+          if (season.discrepancy_details) {
+            try {
+              season.discrepancy_details = JSON.parse(season.discrepancy_details)
+            } catch (e) {
+              season.discrepancy_details = null
+            }
           }
-        }
-        
-        return season
-      })
+          if (season.season_details) {
+            try {
+              season.season_details = JSON.parse(season.season_details)
+            } catch (e) {
+              season.season_details = null
+            }
+          }
+          return season
+        })
+      }
     }
     
     media.seasons = seasons
