@@ -20,7 +20,7 @@ export default defineEventHandler(async (event) => {
   const seerrbridgeUrl = process.env.SEERRBRIDGE_URL || 'http://localhost:8777'
 
   try {
-    const response = await $fetch(`${seerrbridgeUrl}/retrigger-media/${id}`, {
+    const response = await $fetch(`${seerrbridgeUrl}/recheck-media/${id}`, {
       method: 'POST',
       body: Object.keys(backendBody).length ? backendBody : undefined,
       headers: Object.keys(backendBody).length ? { 'Content-Type': 'application/json' } : undefined
@@ -30,7 +30,7 @@ export default defineEventHandler(async (event) => {
   } catch (error: any) {
     throw createError({
       statusCode: error.statusCode || 500,
-      statusMessage: error.statusMessage || 'Failed to retrigger media processing'
+      statusMessage: error.statusMessage || 'Failed to recheck media'
     })
   }
 })

@@ -352,9 +352,8 @@ async def process_failed_items():
                                module="failed_item_manager", function="process_failed_items")
                     continue  # Skip retry, already marked complete
             
-            # Not available in Seerr, proceed with normal retry
-            if failed_item_manager.retry_failed_movie(movie):
-                retry_count += 1
+            # Not available in Seerr. Do not re-queue failed movies here; only the daily 3am job re-queues failed movies.
+            # (TV shows are still retried by this path.)
         
         # Check Seerr availability and retry failed TV shows
         for show in failed_tv_shows:
@@ -391,9 +390,7 @@ async def process_failed_items():
                                module="failed_item_manager", function="process_failed_items")
                     continue  # Skip retry, already marked complete
             
-            # Not available in Seerr, proceed with normal retry
-            if failed_item_manager.retry_failed_tv_show(show):
-                retry_count += 1
+            # Not available in Seerr. Do not re-queue failed TV shows here; daily 3am maintenance handles retries.
         
         if marked_complete_count > 0:
             log_success("Failed Item Processing", 

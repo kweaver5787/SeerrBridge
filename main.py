@@ -1015,16 +1015,116 @@ async def reload_environment():
         "changes": list(changes.keys())
     }
 
+@app.post("/recheck-media/{media_id}")
+async def recheck_media(media_id: int, request: Request):
+    """
+    Status-aware recheck: refresh metadata, then depending on status:
+    - Unreleased: if release date has passed, set to pending and add to queue.
+    - Failed / Pending / Processing: add to queue (one retry / ensure in queue). No-op for completed.
+    - Completed: not allowed; use Re-run instead.
+    - For TV: optional body { season_number?, episode_numbers? } for episode/season scope.
+    """
+    from datetime import timezone
+    from seerr.unified_media_manager import get_media_by_id, refresh_media_from_trakt, update_media_processing_status, update_media_details, tv_recheck_scoped
+    from seerr.config import USE_DATABASE
+
+    body = {}
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            body = await request.json() or {}
+    except Exception:
+        pass
+
+    if not USE_DATABASE:
+        raise HTTPException(status_code=500, detail="Database not enabled")
+
+    media_record = get_media_by_id(media_id)
+    if not media_record:
+        raise HTTPException(status_code=404, detail="Media item not found")
+    if media_record.status == 'ignored':
+        raise HTTPException(status_code=400, detail="Cannot recheck ignored media items")
+    if media_record.status == 'completed':
+        raise HTTPException(
+            status_code=400,
+            detail="Recheck not available for completed items. Use Re-run to treat as a new request."
+        )
+
+    # Always refresh metadata from Trakt
+    if not refresh_media_from_trakt(media_id, force_image_refresh=False):
+        logger.warning(f"Recheck: Trakt refresh failed for media ID {media_id}, continuing with existing data")
+    media_record = get_media_by_id(media_id)
+
+    media_title = f"{media_record.title} ({media_record.year})" if media_record.year else media_record.title
+    imdb_id = media_record.imdb_id or ""
+    extra_data = media_record.extra_data if isinstance(media_record.extra_data, dict) else {}
+
+    current_time = datetime.now(timezone.utc)
+
+    if media_record.status == 'unreleased':
+        released_date = getattr(media_record, 'released_date', None)
+        if released_date is not None:
+            if getattr(released_date, 'tzinfo', None) is None:
+                released_date = released_date.replace(tzinfo=timezone.utc)
+            if released_date > current_time:
+                return {
+                    "status": "success",
+                    "message": "Still unreleased",
+                    "released": False,
+                    "media": {"id": media_record.id, "title": media_record.title, "media_type": media_record.media_type}
+                }
+        update_media_processing_status(media_record.id, 'pending', 'recheck_released', extra_data={})
+        media_record.status = 'pending'
+
+    # TV scoped recheck: move failed -> unprocessed for scope, then add to queue
+    if media_record.media_type == 'tv' and (body.get('season_number') is not None or body.get('episode_numbers') is not None):
+        season_number = body.get('season_number")
+        episode_numbers = body.get('episode_numbers') if isinstance(body.get('episode_numbers'), list) else None
+        ok, msg = tv_recheck_scoped(media_id, season_number=season_number, episode_numbers=episode_numbers)
+        if not ok:
+            raise HTTPException(status_code=400, detail=msg)
+        success = await add_tv_to_queue(
+            imdb_id, media_title, media_record.media_type, extra_data,
+            media_record.overseerr_media_id or 0, media_record.tmdb_id, media_record.overseerr_request_id
+        )
+    elif media_record.media_type == 'movie':
+        success = await add_movie_to_queue(
+            imdb_id, media_title, media_record.media_type, extra_data,
+            media_record.overseerr_media_id or 0, media_record.tmdb_id, media_record.overseerr_request_id
+        )
+    else:
+        success = await add_tv_to_queue(
+            imdb_id, media_title, media_record.media_type, extra_data,
+            media_record.overseerr_media_id or 0, media_record.tmdb_id, media_record.overseerr_request_id
+        )
+
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to add to queue (queue may be full)")
+
+    return {
+        "status": "success",
+        "message": "Recheck completed; item added to queue",
+        "media": {"id": media_record.id, "title": media_record.title, "media_type": media_record.media_type}
+    }
+
+
 @app.post("/retrigger-media/{media_id}")
-async def retrigger_media(media_id: int):
+async def retrigger_media(media_id: int, request: Request):
     """
-    Re-trigger processing for a media item as if it was a new incoming webhook
+    Re-trigger processing for a media item as if it was a new incoming webhook (full re-process / Re-run).
+    For TV: optional body { season_number?, episode_numbers? } for episode/season scope (re-run only that scope).
     """
+    body = {}
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            body = await request.json() or {}
+    except Exception:
+        pass
+
     try:
         logger.info(f"Re-triggering media processing for media ID: {media_id}")
         
         # Get media details from database
-        from seerr.unified_media_manager import get_media_by_id
+        from seerr.unified_media_manager import get_media_by_id, tv_retrigger_scoped
         from seerr.config import USE_DATABASE
         
         if not USE_DATABASE:
@@ -1037,6 +1137,27 @@ async def retrigger_media(media_id: int):
         # Check if media is ignored - don't retrigger ignored items
         if media_record.status == 'ignored':
             raise HTTPException(status_code=400, detail="Cannot retrigger ignored media items")
+
+        # TV scoped re-run: move confirmed -> unprocessed for scope, then add to queue (no full reset)
+        if media_record.media_type == 'tv' and (body.get('season_number') is not None or body.get('episode_numbers') is not None):
+            season_number = body.get('season_number')
+            episode_numbers = body.get('episode_numbers') if isinstance(body.get('episode_numbers'), list) else None
+            ok, msg = tv_retrigger_scoped(media_id, season_number=season_number, episode_numbers=episode_numbers)
+            if not ok:
+                raise HTTPException(status_code=400, detail=msg)
+            media_title = f"{media_record.title} ({media_record.year})" if media_record.year else media_record.title
+            imdb_id = media_record.imdb_id or ""
+            success = await add_tv_to_queue(
+                imdb_id, media_title, media_record.media_type, media_record.extra_data or {},
+                media_record.overseerr_media_id or 0, media_record.tmdb_id, media_record.overseerr_request_id
+            )
+            if not success:
+                raise HTTPException(status_code=500, detail="Failed to add request to queue - queue is full")
+            return {
+                "status": "success",
+                "message": "Re-run scope applied; item added to queue",
+                "media": {"id": media_record.id, "title": media_record.title, "media_type": media_record.media_type}
+            }
         
         # Check if critical data is missing before calling Trakt
         needs_trakt_data = not media_record.tmdb_id or not media_record.imdb_id or not media_record.title

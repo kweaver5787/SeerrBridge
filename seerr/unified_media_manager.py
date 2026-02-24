@@ -395,7 +395,7 @@ def start_media_processing(tmdb_id: int, imdb_id: str, trakt_id: str, media_type
                 existing_media.status = 'unreleased'
                 existing_media.processing_stage = processing_stage
                 log_info("Media Processing", f"Media {existing_media.title} is unreleased, preserving unreleased status")
-            elif current_status not in ['completed', 'processing', 'unreleased']:
+            elif current_status not in ['completed', 'processing', 'unreleased', 'failed']:
                 existing_media.status = 'processing'
                 existing_media.processing_stage = processing_stage
                 existing_media.processing_started_at = datetime.utcnow()
@@ -948,10 +948,14 @@ def update_media_processing_status(media_id: int, status: str, processing_stage:
 def recompute_tv_show_status(media_id: int) -> bool:
     """
     Derive and set a TV show's status from its seasons_data (app-wide rule).
-    Complete = all aired episodes marked complete, no unaired to wait for.
-    Pending = all aired complete, but there are unaired episodes.
-    Processing = at least one aired episode not marked complete.
-    Also sets is_in_queue when status is processing (so it can be picked up).
+    Processing = there are aired episodes that still need processing (unprocessed_episodes present).
+    Failed = there are no unprocessed episodes, but there are failed episodes (retry is handled separately).
+    Pending = all aired complete and no failed, but there are unaired/future episodes.
+    Completed = all tracked episodes are confirmed and there are no unaired/future episodes.
+
+    IMPORTANT: is_in_queue is a runtime queue-tracking flag and must NOT be derived from status.
+    This function will only clear is_in_queue when the show is not processing; queue insertion
+    should be done explicitly by add_tv_to_queue().
     """
     try:
         db = get_db()
@@ -960,21 +964,30 @@ def recompute_tv_show_status(media_id: int) -> bool:
             if not media or media.media_type != 'tv':
                 return False
             seasons_data = media.seasons_data or []
-            all_aired_complete = True
+            has_unprocessed = False
+            has_failed = False
             has_unaired = False
             for season in seasons_data:
                 if not isinstance(season, dict):
                     continue
-                aired = season.get('aired_episodes', 0)
-                episode_count = season.get('episode_count', 0)
-                confirmed = len(season.get('confirmed_episodes', []))
-                if confirmed < aired:
-                    all_aired_complete = False
+                aired = int(season.get('aired_episodes', 0) or 0)
+                episode_count = int(season.get('episode_count', 0) or 0)
+                unprocessed = season.get('unprocessed_episodes', []) or []
+                failed = season.get('failed_episodes', []) or []
+
+                if isinstance(unprocessed, list) and len(unprocessed) > 0:
+                    has_unprocessed = True
+                if isinstance(failed, list) and len(failed) > 0:
+                    has_failed = True
                 if episode_count > 0 and aired < episode_count:
                     has_unaired = True
-            if not all_aired_complete:
+
+            if has_unprocessed:
                 new_status = 'processing'
                 new_stage = 'episodes_pending'
+            elif has_failed:
+                new_status = 'failed'
+                new_stage = 'episodes_failed'
             elif has_unaired:
                 new_status = 'pending'
                 new_stage = 'waiting_for_new_episodes'
@@ -991,7 +1004,9 @@ def recompute_tv_show_status(media_id: int) -> bool:
                 media.processing_started_at = datetime.utcnow()
             db.commit()
             from seerr.database_queue_manager import database_queue_manager
-            database_queue_manager._update_queue_tracking(media, in_queue=(new_status == 'processing'))
+            # Never set is_in_queue=True here; only clear it when we're not actively processing.
+            if new_status != 'processing':
+                database_queue_manager._update_queue_tracking(media, in_queue=False)
             log_info("TV Status", f"Recomputed {media.title} -> {new_status}", module="unified_media_manager", function="recompute_tv_show_status")
             return True
         except Exception as e:
@@ -1076,6 +1091,9 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
                 if episode_numbers:
                     # Mark specific episodes only (in the selected season)
                     for ep_num in episode_numbers:
+                        # Ignore unaired/future episodes
+                        if aired_episodes and ep_num > aired_episodes:
+                            continue
                         ep_id = f"E{str(ep_num).zfill(2)}"
                         episodes_to_mark.add(ep_id)
                 elif season_number is not None:
@@ -1152,6 +1170,121 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
         if 'db' in locals():
             db.rollback()
         return {"success": False, "message": f"Error: {str(e)}"}
+
+
+def tv_recheck_scoped(media_id: int, season_number: Optional[int] = None,
+                     episode_numbers: Optional[List[int]] = None) -> Tuple[bool, str]:
+    """
+    TV Recheck at show/season/episode scope: move failed -> unprocessed for the scope,
+    then recompute show status. Caller should add_tv_to_queue after.
+    - scope show: season_number None
+    - scope season: season_number set, episode_numbers None
+    - scope episode: season_number set, episode_numbers list
+    """
+    try:
+        db = get_db()
+        try:
+            media = db.query(UnifiedMedia).filter(UnifiedMedia.id == media_id).first()
+            if not media or media.media_type != 'tv':
+                return False, "Media not found or not a TV show"
+            seasons_data = media.seasons_data or []
+            if not seasons_data:
+                return False, "No season data for this show"
+            if season_number is not None and episode_numbers is not None and not episode_numbers:
+                return False, "episode_numbers must be non-empty when provided"
+
+            episode_ids_scope = None
+            if episode_numbers is not None:
+                episode_ids_scope = {f"E{str(n).zfill(2)}" for n in episode_numbers}
+
+            for season_data in seasons_data:
+                sn = season_data.get('season_number')
+                if season_number is not None and sn != season_number:
+                    continue
+                failed = list(season_data.get('failed_episodes', []) or [])
+                unprocessed = set(season_data.get('unprocessed_episodes', []) or [])
+                if episode_ids_scope is not None:
+                    to_move = [e for e in failed if e in episode_ids_scope]
+                else:
+                    to_move = failed
+                to_move_set = set(to_move)
+                for e in to_move_set:
+                    unprocessed.add(e)
+                season_data['failed_episodes'] = [e for e in failed if e not in to_move_set]
+                season_data['unprocessed_episodes'] = sorted(list(unprocessed))
+                season_data['updated_at'] = datetime.utcnow().isoformat()
+
+            media.seasons_data = seasons_data
+            media.last_checked_at = datetime.utcnow()
+            media.updated_at = datetime.utcnow()
+            db.commit()
+            recompute_tv_show_status(media_id)
+            return True, "Recheck scope applied; add to queue to process"
+        except Exception as e:
+            db.rollback()
+            log_error("TV Recheck", str(e), module="unified_media_manager", function="tv_recheck_scoped")
+            return False, str(e)
+        finally:
+            db.close()
+    except Exception as e:
+        log_error("TV Recheck", str(e), module="unified_media_manager", function="tv_recheck_scoped")
+        return False, str(e)
+
+
+def tv_retrigger_scoped(media_id: int, season_number: Optional[int] = None,
+                       episode_numbers: Optional[List[int]] = None) -> Tuple[bool, str]:
+    """
+    TV Re-run at show/season/episode scope: move confirmed -> unprocessed for the scope,
+    then recompute show status. Caller should add_tv_to_queue after.
+    """
+    try:
+        db = get_db()
+        try:
+            media = db.query(UnifiedMedia).filter(UnifiedMedia.id == media_id).first()
+            if not media or media.media_type != 'tv':
+                return False, "Media not found or not a TV show"
+            seasons_data = media.seasons_data or []
+            if not seasons_data:
+                return False, "No season data for this show"
+            if season_number is not None and episode_numbers is not None and not episode_numbers:
+                return False, "episode_numbers must be non-empty when provided"
+
+            episode_ids_scope = None
+            if episode_numbers is not None:
+                episode_ids_scope = {f"E{str(n).zfill(2)}" for n in episode_numbers}
+
+            for season_data in seasons_data:
+                sn = season_data.get('season_number')
+                if season_number is not None and sn != season_number:
+                    continue
+                confirmed = set(season_data.get('confirmed_episodes', []) or [])
+                unprocessed = set(season_data.get('unprocessed_episodes', []) or [])
+                if episode_ids_scope is not None:
+                    to_reset = confirmed & episode_ids_scope
+                else:
+                    to_reset = confirmed
+                for e in to_reset:
+                    unprocessed.add(e)
+                season_data['confirmed_episodes'] = sorted(list(confirmed - to_reset))
+                season_data['unprocessed_episodes'] = sorted(list(unprocessed))
+                season_data['updated_at'] = datetime.utcnow().isoformat()
+
+            media.seasons_data = seasons_data
+            media.last_checked_at = datetime.utcnow()
+            media.updated_at = datetime.utcnow()
+            db.commit()
+            recompute_tv_show_status(media_id)
+            return True, "Re-run scope applied; add to queue to process"
+        except Exception as e:
+            db.rollback()
+            log_error("TV Retrigger", str(e), module="unified_media_manager", function="tv_retrigger_scoped")
+            return False, str(e)
+        finally:
+            db.close()
+    except Exception as e:
+        log_error("TV Retrigger", str(e), module="unified_media_manager", function="tv_retrigger_scoped")
+        return False, str(e)
+
 
 def get_media_by_tmdb(tmdb_id: int, media_type: str) -> Optional[UnifiedMedia]:
     """

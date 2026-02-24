@@ -271,16 +271,10 @@ class EnhancedSyncManager:
                     return {'synced': False, 'queued': True}
             
             elif existing_media.status == 'failed':
-                # Failed - check if eligible for retry
-                if self._is_eligible_for_retry(existing_media):
-                    log_info("Enhanced Sync", f"{title} failed but eligible for retry, adding to queue", 
-                            module="enhanced_sync_manager", function="_handle_existing_media")
-                    await self._add_existing_to_queue(existing_media, request)
-                    return {'synced': False, 'queued': True}
-                else:
-                    log_info("Enhanced Sync", f"{title} failed but not eligible for retry yet", 
-                            module="enhanced_sync_manager", function="_handle_existing_media")
-                    return {'synced': False, 'queued': False}
+                # Failed items are only re-queued by the daily 3am maintenance jobs; never re-queue them here
+                log_info("Enhanced Sync", f"{title} is failed; only 3am maintenance re-queues", 
+                        module="enhanced_sync_manager", function="_handle_existing_media")
+                return {'synced': False, 'queued': False}
             
             elif existing_media.status == 'unreleased':
                 # Unreleased - check if still unreleased, don't add to queue

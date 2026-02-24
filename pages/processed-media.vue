@@ -680,12 +680,22 @@
                     </a>
                     
                     <button
-                      @click.stop="retriggerMedia"
-                      :disabled="selectedMedia.status === 'ignored'"
+                      @click.stop="recheckMedia"
+                      :disabled="rechecking || selectedMedia.status === 'completed' || selectedMedia.status === 'ignored'"
                       class="w-full flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 text-xs sm:text-sm text-foreground hover:bg-muted rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
-                      <AppIcon icon="lucide:refresh-cw" size="14" class="sm:w-4 sm:h-4" />
-                      <span class="truncate">Re-trigger Processing</span>
+                      <AppIcon v-if="!rechecking" icon="lucide:search-check" size="14" class="sm:w-4 sm:h-4" />
+                      <AppIcon v-else icon="lucide:loader-2" size="14" class="sm:w-4 sm:h-4 animate-spin" />
+                      <span class="truncate">{{ rechecking ? 'Rechecking...' : 'Recheck' }}</span>
+                    </button>
+                    <button
+                      @click.stop="reRunMedia"
+                      :disabled="reRunning || selectedMedia.status === 'ignored'"
+                      class="w-full flex items-center gap-2 sm:gap-3 px-2 sm:px-3 py-1.5 sm:py-2 text-xs sm:text-sm text-foreground hover:bg-muted rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      <AppIcon v-if="!reRunning" icon="lucide:refresh-cw" size="14" class="sm:w-4 sm:h-4" />
+                      <AppIcon v-else icon="lucide:loader-2" size="14" class="sm:w-4 sm:h-4 animate-spin" />
+                      <span class="truncate">{{ reRunning ? 'Re-running...' : 'Re-run' }}</span>
                     </button>
                     
                     <button
@@ -1737,7 +1747,29 @@
         </div>
         
         <!-- Footer -->
-        <div class="bg-background border-t border-border p-4 sm:p-6 flex items-center justify-end gap-3">
+        <div class="bg-background border-t border-border p-4 sm:p-6 flex flex-wrap items-center justify-end gap-3">
+          <Button
+            @click="executeRecheckScoped"
+            :disabled="recheckingScoped || reRunningScoped || markingComplete || selectedMedia?.status === 'completed' || selectedMedia?.status === 'ignored'"
+            variant="outline"
+            size="sm"
+            title="Recheck: move failed to pending and add to queue (no full reset)"
+          >
+            <AppIcon v-if="recheckingScoped" icon="lucide:loader-2" size="16" class="animate-spin mr-2" />
+            <AppIcon v-else icon="lucide:refresh-cw" size="16" class="mr-2" />
+            {{ recheckingScoped ? 'Rechecking...' : 'Recheck' }}
+          </Button>
+          <Button
+            @click="executeRerunScoped"
+            :disabled="reRunningScoped || recheckingScoped || markingComplete || selectedMedia?.status === 'ignored'"
+            variant="outline"
+            size="sm"
+            title="Re-run: treat selection as new again (re-queue)"
+          >
+            <AppIcon v-if="reRunningScoped" icon="lucide:loader-2" size="16" class="animate-spin mr-2" />
+            <AppIcon v-else icon="lucide:rotate-ccw" size="16" class="mr-2" />
+            {{ reRunningScoped ? 'Re-running...' : 'Re-run' }}
+          </Button>
           <Button
             @click="showMarkCompleteModal = false"
             variant="outline"
@@ -1747,7 +1779,7 @@
           </Button>
           <Button
             @click="handleMarkCompleteSubmit"
-            :disabled="markingComplete || (selectedSeasons.size === 0 && selectedEpisodes.size === 0)"
+            :disabled="markingComplete || recheckingScoped || reRunningScoped || (selectedSeasons.size === 0 && selectedEpisodes.size === 0)"
             size="sm"
           >
             <AppIcon v-if="markingComplete" icon="lucide:loader-2" size="16" class="animate-spin mr-2" />
@@ -1937,10 +1969,14 @@ const actionMenuPosition = ref({ top: 0, right: 0 })
 // Bulk selection state
 const selectedMediaIds = ref<Set<number>>(new Set())
 const bulkRetriggering = ref(false)
+const rechecking = ref(false)
+const reRunning = ref(false)
 const bulkDeleting = ref(false)
 const bulkIgnoring = ref(false)
 const refreshingTrakt = ref(false)
 const markingComplete = ref(false)
+const recheckingScoped = ref(false)
+const reRunningScoped = ref(false)
 const showBulkDeleteConfirmation = ref(false)
 const showBulkIgnoreConfirmation = ref(false)
 const showMarkCompleteModal = ref(false)
@@ -2419,40 +2455,56 @@ const toggleIgnoreStatus = async () => {
   }
 }
 
-const retriggerMedia = async () => {
+const recheckMedia = async () => {
   if (!selectedMedia.value) return
-  
-  // Show confirmation dialog
+  rechecking.value = true
+  try {
+    const response = await $fetch(`/api/recheck-media/${selectedMedia.value.id}`, {
+      method: 'POST'
+    })
+    if (response && (response as any).status === 'success') {
+      await refreshData()
+      const msg = (response as any).message || 'Recheck completed'
+      if ((response as any).released === false) {
+        alert(`${msg}: "${selectedMedia.value?.title}" is still unreleased.`)
+      }
+    }
+  } catch (error: any) {
+    console.error('Error rechecking media:', error)
+    const msg = error?.data?.statusMessage || error?.message || 'Recheck failed'
+    alert(msg)
+  } finally {
+    rechecking.value = false
+  }
+}
+
+const reRunMedia = async () => {
+  if (!selectedMedia.value) return
   const confirmed = confirm(
-    `Are you sure you want to re-trigger processing for "${selectedMedia.value.title}"?\n\n` +
+    `Re-run "${selectedMedia.value.title}" as a brand new request?\n\n` +
     `This will:\n` +
-    `• Remove it from completed status\n` +
-    `• Set it to unprocessed (pending)\n` +
-    `• Queue it for processing by SeerrBridge again\n\n` +
+    `• Treat the item as a new request (full re-process)\n` +
+    `• For TV: reset all seasons and queue again\n` +
+    `• For movies: queue for processing again\n\n` +
+    `Use this when something previously completed is no longer available.\n\n` +
     `Click OK to confirm or Cancel to abort.`
   )
-  
   if (!confirmed) return
-  
+  reRunning.value = true
   try {
     const response = await $fetch(`/api/retrigger-media/${selectedMedia.value.id}`, {
       method: 'POST'
     })
-    
-    if (response && response.status === 'success') {
-      // Update the media status to pending
+    if (response && (response as any).status === 'success') {
       selectedMedia.value.status = 'pending'
       selectedMedia.value.display_status = 'pending'
       selectedMedia.value.processing_stage = 'retriggered'
-      
-      // Refresh the media list to update the UI
       await refreshData()
-      
-      // Success - could add toast notification here
     }
   } catch (error) {
-    // Error retriggering media - could add toast notification here
-    console.error('Error retriggering media:', error)
+    console.error('Error re-running media:', error)
+  } finally {
+    reRunning.value = false
   }
 }
 
@@ -2597,6 +2649,111 @@ const handleMarkCompleteSubmit = async () => {
   
   // If nothing selected, show warning
   alert('Please select at least one season or episode to mark as complete.')
+}
+
+const executeRecheckScoped = async () => {
+  if (!selectedMedia.value) return
+  recheckingScoped.value = true
+  try {
+    const id = selectedMedia.value.id
+    const entireShow = selectedSeasons.value.size === 0 && selectedEpisodes.value.size === 0 ||
+      (selectedSeasons.value.size === selectedMedia.value.seasons?.length && selectedMedia.value.seasons?.length > 0)
+    if (entireShow) {
+      const response = await $fetch(`/api/recheck-media/${id}`, { method: 'POST' }) as any
+      if (response?.status === 'success') {
+        await refreshData()
+        if (selectedMedia.value) {
+          const updated = mediaItems.value.find(m => m.id === selectedMedia.value!.id)
+          if (updated) selectedMedia.value = updated
+        }
+        if (response.released === false) {
+          alert(`${response.message || 'Recheck completed'}: "${selectedMedia.value?.title}" is still unreleased.`)
+        }
+        showMarkCompleteModal.value = false
+      }
+      return
+    }
+    if (selectedSeasons.value.size > 0 && selectedEpisodes.value.size === 0) {
+      for (const seasonNum of selectedSeasons.value) {
+        await $fetch(`/api/recheck-media/${id}`, {
+          method: 'POST',
+          body: { season_number: seasonNum }
+        })
+      }
+    } else if (selectedEpisodes.value.size > 0) {
+      for (const [seasonNum, episodes] of selectedEpisodes.value.entries()) {
+        if (episodes.size > 0) {
+          await $fetch(`/api/recheck-media/${id}`, {
+            method: 'POST',
+            body: { season_number: seasonNum, episode_numbers: Array.from(episodes) }
+          })
+        }
+      }
+    }
+    await refreshData()
+    if (selectedMedia.value) {
+      const updated = mediaItems.value.find(m => m.id === selectedMedia.value!.id)
+      if (updated) selectedMedia.value = updated
+    }
+    showMarkCompleteModal.value = false
+  } catch (e: any) {
+    console.error('Recheck failed:', e)
+    alert(e?.data?.statusMessage || e?.message || 'Recheck failed')
+  } finally {
+    recheckingScoped.value = false
+  }
+}
+
+const executeRerunScoped = async () => {
+  if (!selectedMedia.value) return
+  const scopeLabel = selectedSeasons.value.size === 0 && selectedEpisodes.value.size === 0
+    ? 'entire show'
+    : selectedEpisodes.value.size > 0
+      ? 'selected episodes'
+      : `${selectedSeasons.value.size} season(s)`
+  const confirmed = confirm(
+    `Re-run ${scopeLabel} for "${selectedMedia.value.title}"?\n\n` +
+    `This will treat the selected scope as new again (re-queue for processing). ` +
+    `Use when something completed is no longer available or you want to retry failed episodes.\n\n` +
+    `Click OK to confirm or Cancel to abort.`
+  )
+  if (!confirmed) return
+  reRunningScoped.value = true
+  try {
+    const id = selectedMedia.value.id
+    const entireShow = selectedSeasons.value.size === 0 && selectedEpisodes.value.size === 0 ||
+      (selectedSeasons.value.size === selectedMedia.value.seasons?.length && selectedMedia.value.seasons?.length > 0)
+    if (entireShow) {
+      await $fetch(`/api/retrigger-media/${id}`, { method: 'POST' })
+    } else if (selectedSeasons.value.size > 0 && selectedEpisodes.value.size === 0) {
+      for (const seasonNum of selectedSeasons.value) {
+        await $fetch(`/api/retrigger-media/${id}`, {
+          method: 'POST',
+          body: { season_number: seasonNum }
+        })
+      }
+    } else if (selectedEpisodes.value.size > 0) {
+      for (const [seasonNum, episodes] of selectedEpisodes.value.entries()) {
+        if (episodes.size > 0) {
+          await $fetch(`/api/retrigger-media/${id}`, {
+            method: 'POST',
+            body: { season_number: seasonNum, episode_numbers: Array.from(episodes) }
+          })
+        }
+      }
+    }
+    await refreshData()
+    if (selectedMedia.value) {
+      const updated = mediaItems.value.find(m => m.id === selectedMedia.value!.id)
+      if (updated) selectedMedia.value = updated
+    }
+    showMarkCompleteModal.value = false
+  } catch (e: any) {
+    console.error('Re-run failed:', e)
+    alert(e?.data?.statusMessage || e?.message || 'Re-run failed')
+  } finally {
+    reRunningScoped.value = false
+  }
 }
 
 const toggleSeasonSelection = (seasonNumber: number) => {

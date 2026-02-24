@@ -186,24 +186,7 @@ async def check_config_changes():
                 log_info("Config Refresh", f"Token refresh interval changed: {current_jobs['token_refresh'].trigger.interval.total_seconds() / 60} -> {token_interval}", 
                         module="background_tasks", function="check_config_changes")
             
-            # 2. Check movie processing checks - only if enabled
-            enable_movie_processing = task_config.get_config('enable_automatic_background_task', False)
-            if enable_movie_processing:
-                movie_interval = float(task_config.get_config('movie_processing_check_interval_minutes', 15))
-                if 'movie_processing_checks' not in current_jobs:
-                    should_refresh = True
-                    log_info("Config Refresh", "Movie processing checks enabled but job missing, will refresh", 
-                            module="background_tasks", function="check_config_changes")
-                elif abs(current_jobs['movie_processing_checks'].trigger.interval.total_seconds() / 60 - movie_interval) > 0.1:
-                    should_refresh = True
-                    log_info("Config Refresh", f"Movie processing check interval changed: {current_jobs['movie_processing_checks'].trigger.interval.total_seconds() / 60} -> {movie_interval}", 
-                            module="background_tasks", function="check_config_changes")
-            else:
-                # If disabled, job should not exist
-                if 'movie_processing_checks' in current_jobs:
-                    should_refresh = True
-                    log_info("Config Refresh", "Movie processing checks disabled but job still exists, will refresh", 
-                            module="background_tasks", function="check_config_changes")
+            # 2. Movie processing checks: replaced by daily_3am_movie_recheck; no interval job to check.
             
             # 3. Check movie requests recheck - only if background tasks enabled
             background_tasks_enabled = task_config.get_config('background_tasks_enabled', True)
@@ -247,22 +230,11 @@ async def check_config_changes():
                         module="background_tasks", function="check_config_changes")
             
             # 6. Check subscription check - only if enable_show_subscription_task is True
-            enable_sub = task_config.get_config('enable_show_subscription_task', False)
-            sub_interval = float(task_config.get_config('subscription_check_interval_minutes', 1440))
-            if enable_sub:
-                if 'subscription_check' not in current_jobs:
-                    should_refresh = True
-                    log_info("Config Refresh", "Subscription check enabled but job missing, will refresh", 
-                            module="background_tasks", function="check_config_changes")
-                elif abs(current_jobs['subscription_check'].trigger.interval.total_seconds() / 60 - sub_interval) > 0.1:
-                    should_refresh = True
-                    log_info("Config Refresh", f"Subscription check interval changed: {current_jobs['subscription_check'].trigger.interval.total_seconds() / 60} -> {sub_interval}", 
-                            module="background_tasks", function="check_config_changes")
-            else:
-                if 'subscription_check' in current_jobs:
-                    should_refresh = True
-                    log_info("Config Refresh", "Subscription check disabled but job still exists, will refresh", 
-                            module="background_tasks", function="check_config_changes")
+            # Subscription checks are now part of daily_3am_tv_maintenance (cron @ 3am).
+            if 'daily_3am_tv_maintenance' not in current_jobs:
+                should_refresh = True
+                log_info("Config Refresh", "Daily TV maintenance job missing, will refresh",
+                        module="background_tasks", function="check_config_changes")
         
         if should_refresh:
             log_info("Config Refresh", "Configuration changes detected, refreshing scheduled tasks", 
@@ -290,18 +262,38 @@ async def refresh_all_scheduled_tasks():
     # Schedule token refresh
     schedule_token_refresh()
     
-    # Schedule movie processing checks
-    schedule_movie_processing_checks()
+    # Movie maintenance (unreleased, failed, stuck) is handled by daily_3am_movie_recheck only; no interval job.
     
     # Schedule movie requests recheck
     await schedule_recheck_movie_requests()
     
+    # Schedule daily 3am movie recheck: unreleased→pending+queue, failed movies→queue (only path that re-queues failed movies)
+    scheduler.add_job(
+        daily_3am_movie_recheck,
+        'cron',
+        hour=3,
+        minute=0,
+        id='daily_3am_movie_recheck',
+        replace_existing=True,
+        max_instances=1
+    )
+    log_info("Scheduler", "Scheduled daily 3am movie recheck (unreleased, failed, stuck)", module="background_tasks", function="refresh_all_scheduled_tasks")
+
+    # Schedule daily 3am TV maintenance: unaired→processing, failed episode retries, subscriptions
+    scheduler.add_job(
+        daily_3am_tv_maintenance,
+        'cron',
+        hour=3,
+        minute=0,
+        id='daily_3am_tv_maintenance',
+        replace_existing=True,
+        max_instances=1
+    )
+    log_info("Scheduler", "Scheduled daily 3am TV maintenance (unaired, failed, subscriptions)", module="background_tasks", function="refresh_all_scheduled_tasks")
+    
     # Schedule failed item processing
     schedule_failed_item_processing()
     
-    # Schedule subscription check (own interval, default once per day)
-    schedule_subscription_check()
-
     # Schedule Trakt pending retry (default every 8 hours)
     schedule_trakt_pending_retry()
     
@@ -411,25 +403,8 @@ def schedule_token_refresh():
     log_info("Token Management", f"Scheduled token refresh every {interval} minutes.", module="background_tasks", function="schedule_token_refresh")
 
 def schedule_movie_processing_checks():
-    """Schedule movie processing checks based on database configuration."""
-    # Check if background tasks and scheduler are enabled
-    if not task_config.get_config('background_tasks_enabled', True) or not task_config.get_config('scheduler_enabled', True):
-        log_info("Movie Processing", "Background tasks or scheduler disabled. Skipping movie processing checks.", module="background_tasks", function="schedule_movie_processing_checks")
-        return
-    
-    if task_config.get_config('enable_automatic_background_task', False):
-        interval = int(task_config.get_config('movie_processing_check_interval_minutes', 15))
-        scheduler.add_job(
-            add_movie_processing_check_to_queue,
-            'interval',
-            minutes=interval,
-            id="movie_processing_checks",
-            replace_existing=True,
-            max_instances=1
-        )
-        log_info("Movie Processing", f"Scheduled movie processing checks every {interval} minutes.", module="background_tasks", function="schedule_movie_processing_checks")
-    else:
-        log_info("Movie Processing", "Movie processing checks disabled (enable_automatic_background_task=False).", module="background_tasks", function="schedule_movie_processing_checks")
+    """No-op: movie maintenance (unreleased, failed, stuck) is handled only by daily_3am_movie_recheck."""
+    log_info("Movie Processing", "Movie processing checks replaced by daily 3am recheck; no interval job scheduled.", module="background_tasks", function="schedule_movie_processing_checks")
 
 def schedule_failed_item_processing():
     """Schedule failed item processing based on database configuration."""
@@ -462,6 +437,360 @@ async def add_failed_item_processing_to_queue():
         log_info("Failed Item Processing", "Added failed item processing task to queue", module="background_tasks", function="add_failed_item_processing_to_queue")
     except Exception as e:
         log_error("Failed Item Processing", f"Error adding failed item processing to queue: {e}", module="background_tasks", function="add_failed_item_processing_to_queue")
+
+
+async def daily_3am_movie_recheck():
+    """
+    Daily 3am job: (1) Unreleased movies whose release date has passed → set pending and add to queue.
+    (2) Failed movies → add to queue once for recheck. (3) Stuck movies (processing but not in queue) → re-queue.
+    Replaces the old interval-based "movie processing check"; this is the only scheduled movie maintenance.
+    """
+    if not USE_DATABASE:
+        return
+    async with scheduled_task_semaphore:
+        if is_processing_queue:
+            await queue_processing_complete.wait()
+        log_info("Daily Movie Recheck", "Starting daily 3am movie recheck (unreleased, failed, stuck)", module="background_tasks", function="daily_3am_movie_recheck")
+        from datetime import timedelta
+        from seerr.unified_models import UnifiedMedia
+        from seerr.unified_media_manager import update_media_processing_status
+        db = get_db()
+        try:
+            current_time = datetime.now(timezone.utc)
+            # 1) Unreleased items that should now be released → pending and add to queue
+            unreleased_items = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'movie',
+                UnifiedMedia.status == 'unreleased',
+                UnifiedMedia.released_date <= current_time
+            ).all()
+            for item in unreleased_items:
+                try:
+                    item.status = 'pending'
+                    item.updated_at = datetime.utcnow()
+                    db.commit()
+                    title_display = f"{item.title} ({item.year})" if item.year else item.title
+                    success = await add_movie_to_queue(
+                        item.imdb_id or '',
+                        title_display,
+                        'movie',
+                        item.extra_data or {},
+                        item.overseerr_media_id or 0,
+                        item.tmdb_id,
+                        item.overseerr_request_id
+                    )
+                    if success:
+                        log_info("Daily Movie Recheck", f"Unreleased→pending and queued: {item.title}", module="background_tasks", function="daily_3am_movie_recheck")
+                except Exception as e:
+                    log_error("Daily Movie Recheck", f"Error updating/queuing unreleased {item.title}: {e}", module="background_tasks", function="daily_3am_movie_recheck")
+                    db.rollback()
+                    continue
+            # 2) Failed movies → add each to queue once (only path that re-queues failed movies)
+            failed_movies = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'movie',
+                UnifiedMedia.status == 'failed'
+            ).all()
+            for item in failed_movies:
+                try:
+                    title_display = f"{item.title} ({item.year})" if item.year else item.title
+                    success = await add_movie_to_queue(
+                        item.imdb_id or '',
+                        title_display,
+                        'movie',
+                        item.extra_data or {},
+                        item.overseerr_media_id or 0,
+                        item.tmdb_id,
+                        item.overseerr_request_id
+                    )
+                    if success:
+                        log_info("Daily Movie Recheck", f"Re-queued failed movie: {item.title}", module="background_tasks", function="daily_3am_movie_recheck")
+                except Exception as e:
+                    log_error("Daily Movie Recheck", f"Error queuing failed movie {item.title}: {e}", module="background_tasks", function="daily_3am_movie_recheck")
+            # 3) Stuck movies (processing but not in queue, or processing for a long time) → re-queue once
+            cutoff = datetime.utcnow() - timedelta(minutes=5)
+            stuck_not_in_queue = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'movie',
+                UnifiedMedia.status == 'processing',
+                UnifiedMedia.is_in_queue == False
+            ).all()
+            stuck_old = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'movie',
+                UnifiedMedia.status == 'processing',
+                UnifiedMedia.last_checked_at < cutoff
+            ).all()
+            seen_ids = set()
+            stuck_movies = []
+            for m in stuck_not_in_queue:
+                if m.id not in seen_ids:
+                    seen_ids.add(m.id)
+                    stuck_movies.append(m)
+            for m in stuck_old:
+                if m.id not in seen_ids:
+                    seen_ids.add(m.id)
+                    stuck_movies.append(m)
+            for item in stuck_movies:
+                try:
+                    released = item.released_date
+                    if released is not None:
+                        if getattr(released, 'tzinfo', None) is None:
+                            released = released.replace(tzinfo=timezone.utc)
+                        if released > current_time:
+                            update_media_processing_status(item.id, 'unreleased', 'unreleased_detected_on_check', extra_data={'released_date': released.isoformat()})
+                            continue
+                    title_display = f"{item.title} ({item.year})" if item.year else item.title
+                    success = await add_movie_to_queue(
+                        item.imdb_id or '',
+                        title_display,
+                        'movie',
+                        item.extra_data or {},
+                        item.overseerr_media_id or 0,
+                        item.tmdb_id,
+                        item.overseerr_request_id
+                    )
+                    if success:
+                        log_info("Daily Movie Recheck", f"Re-queued stuck movie: {item.title}", module="background_tasks", function="daily_3am_movie_recheck")
+                except Exception as e:
+                    log_error("Daily Movie Recheck", f"Error queuing stuck movie {item.title}: {e}", module="background_tasks", function="daily_3am_movie_recheck")
+            log_success("Daily Movie Recheck", f"Finished: {len(unreleased_items)} unreleased, {len(failed_movies)} failed, {len(stuck_movies)} stuck→queue", module="background_tasks", function="daily_3am_movie_recheck")
+        finally:
+            db.close()
+
+
+async def daily_3am_tv_maintenance():
+    """
+    Daily 3am TV maintenance:
+    - Move newly-aired episodes into unprocessed_episodes for tracked seasons (unaired → processing).
+    - Retry failed episodes once per day by moving failed_episodes back into unprocessed_episodes.
+    - Run subscription check (adds new seasons/episodes for subscribed shows).
+    """
+    if not USE_DATABASE:
+        return
+    async with scheduled_task_semaphore:
+        if is_processing_queue:
+            await queue_processing_complete.wait()
+
+        log_info("Daily TV Maintenance", "Starting daily 3am TV maintenance (unaired→processing, failed→retry, subscriptions)", module="background_tasks", function="daily_3am_tv_maintenance")
+
+        from seerr.unified_models import UnifiedMedia
+        from seerr.unified_media_manager import update_media_details, recompute_tv_show_status, get_media_by_id
+        from seerr.trakt import get_media_details_from_trakt, get_season_details_from_trakt, check_next_episode_aired
+
+        db = get_db()
+        try:
+            tv_shows = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'tv',
+                UnifiedMedia.status != 'ignored',
+                UnifiedMedia.seasons_data.isnot(None),
+            ).all()
+
+            updated_count = 0
+            queued_count = 0
+
+            # A) Update tracked seasons: when aired_episodes increases, add new episodes to unprocessed_episodes
+            for show in tv_shows:
+                try:
+                    seasons_data = show.seasons_data or []
+                    if isinstance(seasons_data, str):
+                        import json as _json
+                        seasons_data = _json.loads(seasons_data) if seasons_data else []
+                    if not isinstance(seasons_data, list) or not seasons_data:
+                        continue
+
+                    trakt_id = show.trakt_id
+                    imdb_id = show.imdb_id
+                    if not trakt_id and show.tmdb_id:
+                        details = get_media_details_from_trakt(str(show.tmdb_id), 'tv')
+                        if details and details.get('trakt_id'):
+                            trakt_id = str(details.get('trakt_id'))
+                            imdb_id = details.get('imdb_id') or imdb_id
+                            update_media_details(show.id, trakt_id=trakt_id, imdb_id=imdb_id)
+
+                    if not trakt_id:
+                        continue
+
+                    changed = False
+                    for season in seasons_data:
+                        if not isinstance(season, dict):
+                            continue
+                        season_number = int(season.get('season_number', 0) or 0)
+                        if season_number <= 0:
+                            continue
+
+                        old_episode_count = int(season.get('episode_count', 0) or 0)
+                        old_aired = int(season.get('aired_episodes', 0) or 0)
+
+                        # Only check seasons that have unaired/future episodes
+                        if old_episode_count <= 0 or old_aired >= old_episode_count:
+                            continue
+
+                        season_details = get_season_details_from_trakt(str(trakt_id), season_number)
+                        if not season_details:
+                            continue
+
+                        new_episode_count = int(season_details.get('episode_count', old_episode_count) or old_episode_count)
+                        new_aired = int(season_details.get('aired_episodes', old_aired) or old_aired)
+
+                        # If there's a known gap, check if the next episode has aired
+                        if new_episode_count != new_aired:
+                            has_aired, _ = check_next_episode_aired(str(trakt_id), season_number, new_aired)
+                            if has_aired:
+                                new_aired += 1
+
+                        if new_aired > old_aired:
+                            confirmed = set(season.get('confirmed_episodes', []) or [])
+                            failed = set(season.get('failed_episodes', []) or [])
+                            unprocessed = set(season.get('unprocessed_episodes', []) or [])
+                            for ep_num in range(old_aired + 1, new_aired + 1):
+                                ep_id = f"E{str(ep_num).zfill(2)}"
+                                if ep_id in confirmed or ep_id in failed:
+                                    continue
+                                unprocessed.add(ep_id)
+                            season['unprocessed_episodes'] = sorted(list(unprocessed))
+                            changed = True
+
+                        if new_episode_count != old_episode_count:
+                            season['episode_count'] = new_episode_count
+                            changed = True
+                        if new_aired != old_aired:
+                            season['aired_episodes'] = new_aired
+                            changed = True
+
+                        if changed:
+                            season['updated_at'] = datetime.utcnow().isoformat()
+
+                    if not changed:
+                        continue
+
+                    update_media_details(show.id, seasons_data=seasons_data, last_checked_at=datetime.utcnow())
+                    recompute_tv_show_status(show.id)
+                    updated_count += 1
+
+                    after = get_media_by_id(show.id)
+                    if after and after.status == 'processing' and not after.is_in_queue:
+                        title_display = f"{after.title} ({after.year})" if after.year else after.title
+                        ok = await add_tv_to_queue(
+                            after.imdb_id or imdb_id or '',
+                            title_display,
+                            'tv',
+                            after.extra_data or {},
+                            after.overseerr_media_id or 0,
+                            after.tmdb_id,
+                            after.overseerr_request_id
+                        )
+                        if ok:
+                            queued_count += 1
+
+                except Exception as e:
+                    log_error("Daily TV Maintenance", f"Error updating show {getattr(show, 'title', '')}: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+                    continue
+
+            # B) Retry failed episodes once per day: failed_episodes -> unprocessed_episodes, then queue
+            failed_shows = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'tv',
+                UnifiedMedia.status == 'failed',
+                UnifiedMedia.status != 'ignored',
+                UnifiedMedia.seasons_data.isnot(None),
+            ).all()
+
+            retried_count = 0
+            for show in failed_shows:
+                try:
+                    seasons_data = show.seasons_data or []
+                    if isinstance(seasons_data, str):
+                        import json as _json
+                        seasons_data = _json.loads(seasons_data) if seasons_data else []
+                    if not isinstance(seasons_data, list) or not seasons_data:
+                        continue
+
+                    changed = False
+                    for season in seasons_data:
+                        if not isinstance(season, dict):
+                            continue
+                        confirmed = set(season.get('confirmed_episodes', []) or [])
+                        failed = set(season.get('failed_episodes', []) or [])
+                        if not failed:
+                            continue
+                        unprocessed = set(season.get('unprocessed_episodes', []) or [])
+                        for ep_id in failed:
+                            if ep_id in confirmed:
+                                continue
+                            unprocessed.add(ep_id)
+                        season['unprocessed_episodes'] = sorted(list(unprocessed))
+                        season['failed_episodes'] = []
+                        season['updated_at'] = datetime.utcnow().isoformat()
+                        changed = True
+
+                    if not changed:
+                        continue
+
+                    update_media_details(show.id, seasons_data=seasons_data, last_checked_at=datetime.utcnow())
+                    recompute_tv_show_status(show.id)
+                    retried_count += 1
+
+                    after = get_media_by_id(show.id)
+                    if after and after.status == 'processing' and not after.is_in_queue:
+                        title_display = f"{after.title} ({after.year})" if after.year else after.title
+                        await add_tv_to_queue(
+                            after.imdb_id or '',
+                            title_display,
+                            'tv',
+                            after.extra_data or {},
+                            after.overseerr_media_id or 0,
+                            after.tmdb_id,
+                            after.overseerr_request_id
+                        )
+
+                except Exception as e:
+                    log_error("Daily TV Maintenance", f"Error retrying failed show {getattr(show, 'title', '')}: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+                    continue
+
+            # C) Subscriptions: run once per day at 3am as part of maintenance
+            try:
+                await check_show_subscriptions()
+            except Exception as e:
+                log_error("Daily TV Maintenance", f"Error running subscription check: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+
+            # D) Reconcile stuck TV processing (legacy cleanup): if a show is processing but hasn't been checked recently,
+            # clear stale is_in_queue=True and re-queue once.
+            try:
+                from datetime import timedelta
+                cutoff = datetime.utcnow() - timedelta(minutes=10)
+                stuck_processing = db.query(UnifiedMedia).filter(
+                    UnifiedMedia.media_type == 'tv',
+                    UnifiedMedia.status == 'processing',
+                    UnifiedMedia.last_checked_at < cutoff,
+                ).all()
+                if stuck_processing:
+                    from seerr.database_queue_manager import database_queue_manager
+                    for show in stuck_processing:
+                        try:
+                            # Clear stale in-queue flag and re-queue
+                            if show.is_in_queue:
+                                database_queue_manager._update_queue_tracking(show, in_queue=False)
+                            after = get_media_by_id(show.id)
+                            if after and not after.is_in_queue:
+                                title_display = f"{after.title} ({after.year})" if after.year else after.title
+                                await add_tv_to_queue(
+                                    after.imdb_id or '',
+                                    title_display,
+                                    'tv',
+                                    after.extra_data or {},
+                                    after.overseerr_media_id or 0,
+                                    after.tmdb_id,
+                                    after.overseerr_request_id
+                                )
+                        except Exception as e:
+                            log_error("Daily TV Maintenance", f"Error reconciling stuck show {getattr(show, 'title', '')}: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+            except Exception as e:
+                log_error("Daily TV Maintenance", f"Error during stuck processing reconciliation: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+
+            log_success(
+                "Daily TV Maintenance",
+                f"Finished: updated={updated_count} show(s), queued={queued_count} show(s), retried_failed={retried_count} show(s)",
+                module="background_tasks",
+                function="daily_3am_tv_maintenance",
+            )
+        finally:
+            db.close()
 
 
 async def process_trakt_pending_items() -> int:
@@ -562,23 +891,8 @@ def schedule_trakt_pending_retry():
 
 
 def schedule_subscription_check():
-    """Schedule subscription check on its own interval (default 1440 min = once per day)."""
-    if not task_config.get_config('background_tasks_enabled', True) or not task_config.get_config('scheduler_enabled', True):
-        log_info("Subscription Check", "Background tasks or scheduler disabled. Skipping subscription check scheduling.", module="background_tasks", function="schedule_subscription_check")
-        return
-    if not task_config.get_config('enable_show_subscription_task', False):
-        log_info("Subscription Check", "Show subscription check disabled. Not scheduling.", module="background_tasks", function="schedule_subscription_check")
-        return
-    interval = int(task_config.get_config('subscription_check_interval_minutes', 1440))
-    scheduler.add_job(
-        add_subscription_check_to_queue,
-        'interval',
-        minutes=interval,
-        id="subscription_check",
-        replace_existing=True,
-        max_instances=1
-    )
-    log_info("Subscription Check", f"Scheduled subscription check every {interval} minutes.", module="background_tasks", function="schedule_subscription_check")
+    """No-op: subscription checks run inside daily_3am_tv_maintenance (cron @ 3am)."""
+    log_info("Subscription Check", "Subscription check scheduling replaced by daily 3am TV maintenance; no interval job scheduled.", module="background_tasks", function="schedule_subscription_check")
 
 async def schedule_recheck_movie_requests():
     """Schedule or reschedule the movie requests recheck job, replacing any existing job."""
