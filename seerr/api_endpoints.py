@@ -1196,7 +1196,7 @@ async def stop_current_processing():
                     'cancelled_at': datetime.utcnow()
                 }
             
-            # Mark as failed with cancelled stage
+            # Mark as failed with cancelled stage (also clears is_in_queue in same transaction)
             update_media_processing_status(
                 processing_item.id,
                 'failed',
@@ -1208,10 +1208,6 @@ async def stop_current_processing():
                     'stopped_processing': True
                 }
             )
-            
-            # Remove from queue
-            processing_item.is_in_queue = False
-            db.commit()
             
             log_info("Processing Stop", f"Stopped processing for {processing_item.title} (ID: {processing_item.id})", 
                     module="api_endpoints", function="stop_current_processing")

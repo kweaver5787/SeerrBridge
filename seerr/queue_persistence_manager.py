@@ -442,24 +442,34 @@ class QueuePersistenceManager:
                          module="queue_persistence_manager", function="reconcile_queue_from_database")
                 return {'success': False, 'error': str(e)}
             
-            # Filter: keep only items that are in database
+            # Filter: keep only items that are in database, and deduplicate by tmdb_id (one entry per movie/TV show)
             items_to_keep = []
             removed_count = 0
+            seen_tmdb_ids_in_keep = set()
             
             for item in memory_items:
                 keep_item = False
+                item_tmdb_id = None
                 if len(item) >= 6:
                     if not isinstance(item[0], str):  # Regular movie item
                         if item[5] in db_tmdb_ids:
                             keep_item = True
+                            item_tmdb_id = item[5]
                     elif item[0] == "tv_processing" and len(item) >= 8:
                         if item[7] in db_tmdb_ids:
                             keep_item = True
+                            item_tmdb_id = item[7]
                     else:
                         # Special tasks (like "movie_processing_check") - keep them
                         keep_item = True
                 
                 if keep_item:
+                    # Deduplicate: only keep first occurrence of each tmdb_id
+                    if item_tmdb_id is not None:
+                        if item_tmdb_id in seen_tmdb_ids_in_keep:
+                            removed_count += 1
+                            continue
+                        seen_tmdb_ids_in_keep.add(item_tmdb_id)
                     items_to_keep.append(item)
                 else:
                     removed_count += 1

@@ -876,9 +876,9 @@ def update_media_processing_status(media_id: int, status: str, processing_stage:
         elif status == 'processing':
             media.processing_started_at = datetime.utcnow()
         elif status == 'failed':
-            # Note: is_in_queue flag is managed by queue processing logic, not here
-            # Queue processing will clear the flag when item is removed from queue
-            pass
+            # Clear queue flag so the item is not re-picked; avoids race when stop endpoint
+            # and queue processor both touch the same row (MySQL 1020 "Record has changed").
+            media.is_in_queue = False
         
         db.commit()
         

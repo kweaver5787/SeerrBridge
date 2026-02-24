@@ -994,6 +994,15 @@ async def process_tv_queue():
                             tv_queue.task_done()
                             continue
                         
+                        # Skip duplicate of already-failed item (prevents loop when same show was in queue multiple times)
+                        if media_record.status == 'failed' and media_record.processing_stage == 'search_failed':
+                            log_info("Queue Cancellation", f"Skipping duplicate of already-failed item: {movie_title} (TMDB: {tmdb_id})", 
+                                    module="background_tasks", function="process_tv_queue")
+                            database_queue_manager._update_queue_tracking(media_record, False)
+                            task_done_called = True
+                            tv_queue.task_done()
+                            continue
+                        
                         # Item is valid - ensure is_in_queue is set to True (item is in queue since we just dequeued it)
                         if not media_record.is_in_queue:
                             database_queue_manager._update_queue_tracking(media_record, True)
@@ -1260,6 +1269,10 @@ async def add_movie_to_queue(imdb_id, movie_title, media_type, extra_data, media
         
         media_record = get_media_by_tmdb(tmdb_id, media_type)
         if media_record:
+            # Skip adding if already in queue (prevents duplicates when multiple code paths add the same title)
+            if media_record.is_in_queue:
+                log_info("Queue Management", f"Movie {movie_title} (TMDB: {tmdb_id}) already in queue, skipping duplicate", module="background_tasks", function="add_movie_to_queue")
+                return True
             # Set is_in_queue flag in database before adding to in-memory queue
             database_queue_manager._update_queue_tracking(media_record, True)
             log_info("Queue Management", f"Set is_in_queue=True in database for {movie_title} (TMDB: {tmdb_id})", module="background_tasks", function="add_movie_to_queue")
@@ -1633,6 +1646,10 @@ async def add_tv_to_queue(imdb_id, movie_title, media_type, extra_data, media_id
         
         media_record = get_media_by_tmdb(tmdb_id, media_type)
         if media_record:
+            # Skip adding if already in queue (prevents duplicates when multiple code paths add the same title)
+            if media_record.is_in_queue:
+                log_info("Queue Management", f"TV show {movie_title} (TMDB: {tmdb_id}) already in queue, skipping duplicate", module="background_tasks", function="add_tv_to_queue")
+                return True
             # Set is_in_queue flag in database before adding to in-memory queue
             database_queue_manager._update_queue_tracking(media_record, True)
             log_info("Queue Management", f"Set is_in_queue=True in database for {movie_title} (TMDB: {tmdb_id})", module="background_tasks", function="add_tv_to_queue")
