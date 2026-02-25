@@ -7,6 +7,7 @@ Replaces processed_media.py, overseerr.py media tracking, and show subscriptions
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 from seerr.database import get_db
 from seerr.unified_models import UnifiedMedia
 from seerr.db_logger import log_info, log_success, log_error, log_warning
@@ -1125,8 +1126,9 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
                 
                 updated_seasons.append(season_data)
             
-            # Persist updated seasons
+            # Persist updated seasons (flag_modified so SQLAlchemy emits UPDATE for JSON column)
             media.seasons_data = updated_seasons
+            flag_modified(media, "seasons_data")
             media.last_checked_at = datetime.utcnow()
             media.updated_at = datetime.utcnow()
             db.commit()
