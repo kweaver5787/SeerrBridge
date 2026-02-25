@@ -400,9 +400,9 @@ async def lifespan(app: FastAPI):
 
 # Add helper functions for delayed task execution
 async def delayed_populate_queues():
-    """Run populate_queues_from_overseerr after a short delay"""
+    """Run populate_queues_from_overseerr after a short delay (only new requests not yet in DB)."""
     await asyncio.sleep(2)  # Wait 2 seconds before starting
-    await populate_queues_from_overseerr()
+    await populate_queues_from_overseerr(only_new_requests=True)
 
 app = FastAPI(lifespan=lifespan)
 

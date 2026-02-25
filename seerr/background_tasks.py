@@ -2426,13 +2426,19 @@ async def sync_all_requests_to_database():
     except Exception as e:
         log_error("Database Sync Error", f"Error syncing requests to database: {e}", module="background_tasks", function="sync_all_requests_to_database")
 
-async def populate_queues_from_overseerr():
+async def populate_queues_from_overseerr(only_new_requests: bool = False):
     """
     Fetch Overseerr media requests and populate the appropriate queues.
     For TV shows, fetch season details and log discrepancies if found,
     then add them to the TV queue. Movies are added to the movie queue.
+
+    When only_new_requests=True, only adds requests that have no unified_media row yet
+    (avoids duplicating items already synced from an earlier populate, e.g. delayed run).
     """
-    log_info("Queue Population", "Starting to populate queues from Overseerr media requests...", module="background_tasks", function="populate_queues_from_overseerr")
+    if only_new_requests:
+        log_info("Queue Population", "Populating queues from Overseerr (only new requests not yet in DB)...", module="background_tasks", function="populate_queues_from_overseerr")
+    else:
+        log_info("Queue Population", "Starting to populate queues from Overseerr media requests...", module="background_tasks", function="populate_queues_from_overseerr")
 
     # Check if browser driver is available
     from seerr.browser import driver as browser_driver
@@ -2527,6 +2533,19 @@ async def populate_queues_from_overseerr():
                 if is_completed:
                     logger.info(f"Media {tmdb_id} ({media_type}) is already completed. Skipping.")
                     continue
+
+            # When only_new_requests=True, skip any request already in DB (avoid duplicating from first populate)
+            if only_new_requests:
+                from seerr.unified_media_manager import get_media_by_overseerr_request
+                if aggregated_request_ids:
+                    already_in_db = any(get_media_by_overseerr_request(aid) is not None for aid in aggregated_request_ids)
+                    if already_in_db:
+                        logger.info(f"Media {tmdb_id} ({media_type}) already in DB. Skipping (only new requests).")
+                        continue
+                else:
+                    if get_media_by_overseerr_request(request_id) is not None:
+                        logger.info(f"Media {tmdb_id} ({media_type}) already in DB (request ID {request_id}). Skipping (only new requests).")
+                        continue
 
         logger.info(f"Processing media {tmdb_id} ({media_type}) - adding to queue for processing...")
 
