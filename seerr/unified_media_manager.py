@@ -1130,6 +1130,33 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
             media.last_checked_at = datetime.utcnow()
             media.updated_at = datetime.utcnow()
             db.commit()
+
+            # DEBUG: log what we just committed (in-memory state)
+            for s in updated_seasons:
+                if not isinstance(s, dict):
+                    continue
+                sn = s.get('season_number')
+                if season_number is not None and sn != season_number:
+                    continue
+                if season_number is None and not (s.get('confirmed_episodes')):
+                    continue
+                log_info("Episode Marking", f"mark_episodes_complete: after commit (in-memory) media_id={media_id} season_number={sn} confirmed_episodes={s.get('confirmed_episodes')}",
+                         module="unified_media_manager", function="mark_episodes_complete")
+
+            # DEBUG: re-fetch from DB and log what we see (verify persist)
+            refetched = db.query(UnifiedMedia).filter(UnifiedMedia.id == media_id).first()
+            if refetched and refetched.seasons_data:
+                for s in refetched.seasons_data:
+                    if not isinstance(s, dict):
+                        continue
+                    sn = s.get('season_number')
+                    if season_number is not None and sn != season_number:
+                        continue
+                    if season_number is None and not (s.get('confirmed_episodes')):
+                        continue
+                    log_info("Episode Marking", f"mark_episodes_complete: after commit (refetch) media_id={media_id} season_number={sn} confirmed_episodes={s.get('confirmed_episodes')}",
+                             module="unified_media_manager", function="mark_episodes_complete")
+                    break
             
             # Derive show status from DB state (app-wide rule)
             recompute_tv_show_status(media_id)
