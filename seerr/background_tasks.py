@@ -1025,9 +1025,8 @@ async def process_movie_queue():
                             movie_queue.task_done()
                             continue
                         
-                        # Item is valid - ensure is_in_queue is set to True (item is in queue since we just dequeued it)
-                        if not media_record.is_in_queue:
-                            database_queue_manager._update_queue_tracking(media_record, True)
+                        # Item dequeued - set is_in_queue False so periodic reconcile won't re-add it while we process
+                        database_queue_manager._update_queue_tracking(media_record, False)
                         
                         # Clear any stale cancellation tracking (item is active since we dequeued it)
                         cancellation_registry.pop((tmdb_id, media_type), None)
@@ -1267,9 +1266,8 @@ async def process_tv_queue():
                             tv_queue.task_done()
                             continue
                         
-                        # Item is valid - ensure is_in_queue is set to True (item is in queue since we just dequeued it)
-                        if not media_record.is_in_queue:
-                            database_queue_manager._update_queue_tracking(media_record, True)
+                        # Item dequeued - set is_in_queue False so periodic reconcile won't re-add it while we process
+                        database_queue_manager._update_queue_tracking(media_record, False)
                         
                         # Clear any stale cancellation tracking (item is active since we dequeued it)
                         cancellation_registry.pop((tmdb_id, media_type), None)
