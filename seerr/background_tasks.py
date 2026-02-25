@@ -440,7 +440,7 @@ async def daily_3am_movie_recheck():
         db = get_db()
         try:
             current_time = datetime.now(timezone.utc)
-            # 1) Unreleased items that should now be released → pending and add to queue
+            # 1) Unreleased items that should now be released → processing and add to queue
             unreleased_items = db.query(UnifiedMedia).filter(
                 UnifiedMedia.media_type == 'movie',
                 UnifiedMedia.status == 'unreleased',
@@ -448,9 +448,7 @@ async def daily_3am_movie_recheck():
             ).all()
             for item in unreleased_items:
                 try:
-                    item.status = 'pending'
-                    item.updated_at = datetime.utcnow()
-                    db.commit()
+                    update_media_processing_status(item.id, 'processing', 'queue_processing')
                     title_display = f"{item.title} ({item.year})" if item.year else item.title
                     success = await add_movie_to_queue(
                         item.imdb_id or '',
@@ -462,7 +460,7 @@ async def daily_3am_movie_recheck():
                         item.overseerr_request_id
                     )
                     if success:
-                        log_info("Daily Movie Recheck", f"Unreleased→pending and queued: {item.title}", module="background_tasks", function="daily_3am_movie_recheck")
+                        log_info("Daily Movie Recheck", f"Unreleased→processing and queued: {item.title}", module="background_tasks", function="daily_3am_movie_recheck")
                 except Exception as e:
                     log_error("Daily Movie Recheck", f"Error updating/queuing unreleased {item.title}: {e}", module="background_tasks", function="daily_3am_movie_recheck")
                     db.rollback()
@@ -540,10 +538,8 @@ async def daily_3am_movie_recheck():
 
 async def daily_3am_tv_maintenance():
     """
-    Daily 3am TV maintenance:
-    - Move newly-aired episodes into unprocessed_episodes for tracked seasons (unaired → processing).
-    - Retry failed episodes once per day by moving failed_episodes back into unprocessed_episodes.
-    - Run subscription check (adds new seasons/episodes for subscribed shows).
+    Daily 3am TV maintenance. Order: C (subscriptions) -> A (non-subscribed newly-aired) -> B (failed retry)
+    -> Reconcile (fix status from season data) -> D (stuck cleanup) -> Queue population (one pass).
     """
     if not USE_DATABASE:
         return
@@ -551,7 +547,7 @@ async def daily_3am_tv_maintenance():
         if is_processing_queue:
             await queue_processing_complete.wait()
 
-        log_info("Daily TV Maintenance", "Starting daily 3am TV maintenance (unaired→processing, failed→retry, subscriptions)", module="background_tasks", function="daily_3am_tv_maintenance")
+        log_info("Daily TV Maintenance", "Starting daily 3am TV maintenance (C->A->B->Reconcile->D->Queue)", module="background_tasks", function="daily_3am_tv_maintenance")
 
         from seerr.unified_models import UnifiedMedia
         from seerr.unified_media_manager import update_media_details, recompute_tv_show_status, get_media_by_id
@@ -559,6 +555,14 @@ async def daily_3am_tv_maintenance():
 
         db = get_db()
         try:
+            # C) Subscription check (subscribed shows only): Trakt -> DB, no queue add (single pass at end)
+            try:
+                await check_show_subscriptions(add_to_queue=False)
+            except Exception as e:
+                log_error("Daily TV Maintenance", f"Error running subscription check: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+
+            # A) Newly-aired for NON-SUBSCRIBED shows only. Call Trakt for all tracked seasons (do not skip all-aired).
+            # No queue add here.
             tv_shows = db.query(UnifiedMedia).filter(
                 UnifiedMedia.media_type == 'tv',
                 UnifiedMedia.status != 'ignored',
@@ -566,10 +570,9 @@ async def daily_3am_tv_maintenance():
             ).all()
 
             updated_count = 0
-            queued_count = 0
-
-            # A) Update tracked seasons: when aired_episodes increases, add new episodes to unprocessed_episodes
             for show in tv_shows:
+                if getattr(show, 'is_subscribed', False):
+                    continue
                 try:
                     seasons_data = show.seasons_data or []
                     if isinstance(seasons_data, str):
@@ -600,9 +603,7 @@ async def daily_3am_tv_maintenance():
 
                         old_episode_count = int(season.get('episode_count', 0) or 0)
                         old_aired = int(season.get('aired_episodes', 0) or 0)
-
-                        # Only check seasons that have unaired/future episodes
-                        if old_episode_count <= 0 or old_aired >= old_episode_count:
+                        if old_episode_count <= 0:
                             continue
 
                         season_details = get_season_details_from_trakt(str(trakt_id), season_number)
@@ -611,8 +612,6 @@ async def daily_3am_tv_maintenance():
 
                         new_episode_count = int(season_details.get('episode_count', old_episode_count) or old_episode_count)
                         new_aired = int(season_details.get('aired_episodes', old_aired) or old_aired)
-
-                        # If there's a known gap, check if the next episode has aired
                         if new_episode_count != new_aired:
                             has_aired, _ = check_next_episode_aired(str(trakt_id), season_number, new_aired)
                             if has_aired:
@@ -647,26 +646,11 @@ async def daily_3am_tv_maintenance():
                     recompute_tv_show_status(show.id)
                     updated_count += 1
 
-                    after = get_media_by_id(show.id)
-                    if after and after.status == 'processing' and not after.is_in_queue:
-                        title_display = f"{after.title} ({after.year})" if after.year else after.title
-                        ok = await add_tv_to_queue(
-                            after.imdb_id or imdb_id or '',
-                            title_display,
-                            'tv',
-                            after.extra_data or {},
-                            after.overseerr_media_id or 0,
-                            after.tmdb_id,
-                            after.overseerr_request_id
-                        )
-                        if ok:
-                            queued_count += 1
-
                 except Exception as e:
                     log_error("Daily TV Maintenance", f"Error updating show {getattr(show, 'title', '')}: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
                     continue
 
-            # B) Retry failed episodes once per day: failed_episodes -> unprocessed_episodes, then queue
+            # B) Retry failed episodes once per day: failed_episodes -> unprocessed_episodes. No queue add.
             failed_shows = db.query(UnifiedMedia).filter(
                 UnifiedMedia.media_type == 'tv',
                 UnifiedMedia.status == 'failed',
@@ -709,31 +693,44 @@ async def daily_3am_tv_maintenance():
                     recompute_tv_show_status(show.id)
                     retried_count += 1
 
-                    after = get_media_by_id(show.id)
-                    if after and after.status == 'processing' and not after.is_in_queue:
-                        title_display = f"{after.title} ({after.year})" if after.year else after.title
-                        await add_tv_to_queue(
-                            after.imdb_id or '',
-                            title_display,
-                            'tv',
-                            after.extra_data or {},
-                            after.overseerr_media_id or 0,
-                            after.tmdb_id,
-                            after.overseerr_request_id
-                        )
-
                 except Exception as e:
                     log_error("Daily TV Maintenance", f"Error retrying failed show {getattr(show, 'title', '')}: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
                     continue
 
-            # C) Subscriptions: run once per day at 3am as part of maintenance
-            try:
-                await check_show_subscriptions()
-            except Exception as e:
-                log_error("Daily TV Maintenance", f"Error running subscription check: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+            # Reconcile: fix show status from season data (completed/pending -> processing/failed when any season has unprocessed or failed)
+            reconciled_count = 0
+            all_tv = db.query(UnifiedMedia).filter(
+                UnifiedMedia.media_type == 'tv',
+                UnifiedMedia.status != 'ignored',
+                UnifiedMedia.seasons_data.isnot(None),
+            ).all()
+            for show in all_tv:
+                try:
+                    seasons_data = show.seasons_data or []
+                    if isinstance(seasons_data, str):
+                        import json as _json
+                        seasons_data = _json.loads(seasons_data) if seasons_data else []
+                    if not isinstance(seasons_data, list) or not seasons_data:
+                        continue
+                    has_work = False
+                    for season in seasons_data:
+                        if not isinstance(season, dict):
+                            continue
+                        unprocessed = season.get('unprocessed_episodes') or []
+                        failed = season.get('failed_episodes') or []
+                        if (isinstance(unprocessed, list) and len(unprocessed) > 0) or (isinstance(failed, list) and len(failed) > 0):
+                            has_work = True
+                            break
+                    if not has_work:
+                        continue
+                    if show.status not in ('processing', 'failed'):
+                        recompute_tv_show_status(show.id)
+                        reconciled_count += 1
+                except Exception as e:
+                    log_error("Daily TV Maintenance", f"Error reconciling show {getattr(show, 'title', '')}: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+                    continue
 
-            # D) Reconcile stuck TV processing (legacy cleanup): if a show is processing but hasn't been checked recently,
-            # clear stale is_in_queue=True and re-queue once.
+            # D) Stuck TV processing: clear stale is_in_queue and re-queue so single queue pass can run cleanly
             try:
                 from datetime import timedelta
                 cutoff = datetime.utcnow() - timedelta(minutes=10)
@@ -746,7 +743,6 @@ async def daily_3am_tv_maintenance():
                     from seerr.database_queue_manager import database_queue_manager
                     for show in stuck_processing:
                         try:
-                            # Clear stale in-queue flag and re-queue
                             if show.is_in_queue:
                                 database_queue_manager._update_queue_tracking(show, in_queue=False)
                             after = get_media_by_id(show.id)
@@ -766,9 +762,15 @@ async def daily_3am_tv_maintenance():
             except Exception as e:
                 log_error("Daily TV Maintenance", f"Error during stuck processing reconciliation: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
 
+            # Queue population: one pass to add all processing items to the queue
+            try:
+                await populate_queues_from_unified_media()
+            except Exception as e:
+                log_error("Daily TV Maintenance", f"Error during queue population: {e}", module="background_tasks", function="daily_3am_tv_maintenance")
+
             log_success(
                 "Daily TV Maintenance",
-                f"Finished: updated={updated_count} show(s), queued={queued_count} show(s), retried_failed={retried_count} show(s)",
+                f"Finished: updated={updated_count}, retried_failed={retried_count}, reconciled={reconciled_count}",
                 module="background_tasks",
                 function="daily_3am_tv_maintenance",
             )
@@ -1969,10 +1971,10 @@ async def populate_queues_from_unified_media():
         
         db = get_db()
         try:
-            # Get all media items that are in processing state
+            # Get all media items that are in processing state (include episodes_pending so 3am maintenance shows get queued)
             processing_items = db.query(UnifiedMedia).filter(
                 UnifiedMedia.status == 'processing',
-                UnifiedMedia.processing_stage.in_(['queue_processing', 'browser_automation'])
+                UnifiedMedia.processing_stage.in_(['queue_processing', 'browser_automation', 'episodes_pending'])
             ).all()
             
             movies_added = 0
@@ -3303,11 +3305,12 @@ def _parse_first_aired(episode: dict) -> Optional[datetime]:
         return None
 
 
-async def check_show_subscriptions():
+async def check_show_subscriptions(add_to_queue: bool = True):
     """
     Check all subscribed shows for new episodes (anchor = subscription_started_at).
     Refreshes from Trakt (forward-only: only seasons/episodes on or after anchor).
-    Updates DB and adds to queue only when there are episodes to fetch. No inline DMM.
+    Updates DB and optionally adds to queue when there are episodes to fetch (add_to_queue=False
+    when called from 3am maintenance so a single queue population pass runs at the end).
     """
     if not task_config.get_config('enable_show_subscription_task', False):
         logger.info("Show subscription check disabled (enable_show_subscription_task=False).")
@@ -3416,20 +3419,20 @@ async def check_show_subscriptions():
             subscription_last_checked=datetime.utcnow()
         )
         recompute_tv_show_status(subscription.id)
-        # Add to queue when show is in processing (recompute already set is_in_queue)
-        subscription_after = get_media_by_id(subscription.id)
-        if subscription_after and subscription_after.status == 'processing':
-            media_title = f"{show_title} ({subscription.year})" if subscription.year else show_title
-            await add_tv_to_queue(
-                imdb_id or '',
-                media_title,
-                'tv',
-                subscription.extra_data or {},
-                subscription.overseerr_media_id or 0,
-                tmdb_id,
-                subscription.overseerr_request_id
-            )
-            logger.info(f"Subscription check: queued {show_title} for new episodes.")
+        if add_to_queue:
+            subscription_after = get_media_by_id(subscription.id)
+            if subscription_after and subscription_after.status == 'processing':
+                media_title = f"{show_title} ({subscription.year})" if subscription.year else show_title
+                await add_tv_to_queue(
+                    imdb_id or '',
+                    media_title,
+                    'tv',
+                    subscription.extra_data or {},
+                    subscription.overseerr_media_id or 0,
+                    tmdb_id,
+                    subscription.overseerr_request_id
+                )
+                logger.info(f"Subscription check: queued {show_title} for new episodes.")
 
     logger.info("Completed show subscription check.")
 
