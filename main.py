@@ -1077,7 +1077,7 @@ async def recheck_media(media_id: int, request: Request):
 
     # TV scoped recheck: move failed -> unprocessed for scope, then add to queue
     if media_record.media_type == 'tv' and (body.get('season_number') is not None or body.get('episode_numbers') is not None):
-        season_number = body.get('season_number")
+        season_number = body.get('season_number')
         episode_numbers = body.get('episode_numbers') if isinstance(body.get('episode_numbers'), list) else None
         ok, msg = tv_recheck_scoped(media_id, season_number=season_number, episode_numbers=episode_numbers)
         if not ok:
