@@ -187,25 +187,7 @@ async def check_config_changes():
                         module="background_tasks", function="check_config_changes")
             
             # 2. Movie processing checks: replaced by daily_3am_movie_recheck; no interval job to check.
-            
-            # 3. Check movie requests recheck - only if background tasks enabled
-            background_tasks_enabled = task_config.get_config('background_tasks_enabled', True)
-            if background_tasks_enabled:
-                refresh_interval = float(task_config.get_config('refresh_interval_minutes', 60.0))
-                if 'process_movie_requests' not in current_jobs:
-                    should_refresh = True
-                    log_info("Config Refresh", "Movie requests recheck enabled but job missing, will refresh", 
-                            module="background_tasks", function="check_config_changes")
-                elif abs(current_jobs['process_movie_requests'].trigger.interval.total_seconds() / 60 - refresh_interval) > 0.1:
-                    should_refresh = True
-                    log_info("Config Refresh", f"Movie requests recheck interval changed: {current_jobs['process_movie_requests'].trigger.interval.total_seconds() / 60} -> {refresh_interval}", 
-                            module="background_tasks", function="check_config_changes")
-            else:
-                # If disabled, job should not exist
-                if 'process_movie_requests' in current_jobs:
-                    should_refresh = True
-                    log_info("Config Refresh", "Background tasks disabled but movie requests job still exists, will refresh", 
-                            module="background_tasks", function="check_config_changes")
+            # 3. Queue population: no interval job; only at startup and 3am.
             
             # 4. Check availability check for failed items - should always exist if scheduler is enabled
             availability_interval = 30.0  # Fixed at 30 minutes
@@ -263,9 +245,7 @@ async def refresh_all_scheduled_tasks():
     schedule_token_refresh()
     
     # Movie maintenance (unreleased, failed, stuck) is handled by daily_3am_movie_recheck only; no interval job.
-    
-    # Schedule movie requests recheck
-    await schedule_recheck_movie_requests()
+    # Queue population (Overseerr + unified_media) runs only at startup (once) and at 3am; no interval job.
     
     # Schedule daily 3am movie recheck: unreleased→pending+queue, failed movies→queue (only path that re-queues failed movies)
     scheduler.add_job(
@@ -353,6 +333,9 @@ async def initialize_background_tasks():
     
     # On first boot, immediately check for stuck items
     await check_stuck_items_on_startup()
+    
+    # One-time population from Overseerr so new requests get one startup pass (no interval; next population is 3am or manual)
+    await populate_queues_from_overseerr()
     
     # On first boot, immediately check for failed items
     from seerr.failed_item_manager import process_failed_items
@@ -895,41 +878,8 @@ def schedule_subscription_check():
     log_info("Subscription Check", "Subscription check scheduling replaced by daily 3am TV maintenance; no interval job scheduled.", module="background_tasks", function="schedule_subscription_check")
 
 async def schedule_recheck_movie_requests():
-    """Schedule or reschedule the movie requests recheck job, replacing any existing job."""
-    # Check if background tasks and scheduler are enabled
-    if not task_config.get_config('background_tasks_enabled', True) or not task_config.get_config('scheduler_enabled', True):
-        log_info("Scheduler", "Background tasks or scheduler disabled. Skipping movie requests recheck scheduling.", module="background_tasks", function="schedule_recheck_movie_requests")
-        return
-    
-    # Get interval from database configuration
-    refresh_interval = float(task_config.get_config('refresh_interval_minutes', 60.0))
-    min_interval = 1.0  # Minimum interval in minutes
-    
-    if refresh_interval < min_interval:
-        log_warning("Configuration Warning", f"refresh_interval_minutes ({refresh_interval}) is too small. Using minimum interval of {min_interval} minutes.", module="background_tasks", function="schedule_movie_requests_recheck")
-        interval = min_interval
-    else:
-        interval = refresh_interval
-
-    try:
-        # Remove all existing jobs with the same ID
-        for job in scheduler.get_jobs():
-            if job.id == "process_movie_requests":
-                scheduler.remove_job(job.id)
-                log_info("Scheduler", "Removed existing job with ID: process_movie_requests", module="background_tasks", function="schedule_movie_requests_recheck")
-
-        # Schedule the new job with a unique ID
-        scheduler.add_job(
-            scheduled_task_wrapper,
-            'interval',
-            minutes=interval,
-            id="process_movie_requests",
-            replace_existing=True,
-            max_instances=1  # Explicitly set to avoid unexpected concurrency
-        )
-        log_info("Scheduler", f"Scheduled rechecking movie requests every {interval} minute(s).", module="background_tasks", function="schedule_movie_requests_recheck")
-    except Exception as e:
-        log_error("Scheduler Error", f"Error scheduling movie requests recheck: {e}", module="background_tasks", function="schedule_movie_requests_recheck")
+    """No-op: queue population (Overseerr + unified_media) runs only at startup (once) and at 3am, not on an interval."""
+    log_info("Scheduler", "Queue population runs only at startup and 3am; no interval job scheduled.", module="background_tasks", function="schedule_recheck_movie_requests")
 
 async def scheduled_task_wrapper():
     """Wrapper to ensure only one scheduled task runs at a time and waits for queue completion."""
