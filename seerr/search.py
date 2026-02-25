@@ -2387,15 +2387,17 @@ def process_season_page(driver, movie_title, season_num, normalized_seasons, tmd
 
 def _check_queue_status(tmdb_id, media_type):
     """
-    Check if the current item is still in the queue.
-    Database is the source of truth - if is_in_queue is False, stop processing.
+    Check if the current item was explicitly cancelled (user cleared from queue).
+    We stop only when the user cancelled; is_in_queue is False while we're processing
+    (set on dequeue to prevent reconcile from re-adding), so do not stop just because
+    is_in_queue is False.
     
     Args:
         tmdb_id (int): TMDB ID of the media
         media_type (str): Type of media ('movie' or 'tv')
         
     Returns:
-        bool: True if item should stop processing (not in queue), False if should continue (in queue)
+        bool: True if item should stop processing (cancelled), False if should continue
     """
     if not tmdb_id:
         return False
@@ -2405,11 +2407,13 @@ def _check_queue_status(tmdb_id, media_type):
             from seerr.unified_media_manager import get_media_by_tmdb
             media_record = get_media_by_tmdb(tmdb_id, media_type)
             if media_record:
-                # Simple check: if not in queue, stop processing
-                if not media_record.is_in_queue:
-                    logger.info(f"Item {tmdb_id} ({media_type}) is not in queue. Stopping processing.")
+                # Stop only if user explicitly cancelled (cleared from queue)
+                if (not media_record.is_in_queue and
+                        media_record.status == 'failed' and
+                        media_record.processing_stage == 'cancelled'):
+                    logger.info(f"Item {tmdb_id} ({media_type}) was cancelled. Stopping processing.")
                     return True
-                # Item is in queue, continue processing
+                # Otherwise continue: either in queue or currently being processed
                 return False
         # If database not available or record not found, continue processing
         return False
