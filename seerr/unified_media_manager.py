@@ -11,6 +11,7 @@ from sqlalchemy.orm.attributes import flag_modified
 from seerr.database import get_db
 from seerr.unified_models import UnifiedMedia
 from seerr.db_logger import log_info, log_success, log_error, log_warning
+from seerr.config import USE_DATABASE
 from seerr.enhanced_season_manager import EnhancedSeasonManager
 
 def create_notification(type: str, title: str, message: str, media_id: Optional[int] = None, 
@@ -235,6 +236,111 @@ def has_complete_critical_data(media: UnifiedMedia) -> bool:
             return False
     
     return True
+
+
+def prepare_movie_from_trakt_for_search(
+    tmdb_id: int,
+    fallback_imdb_id: str,
+    fallback_movie_title: str,
+    unified_media_id: Optional[int] = None,
+) -> Tuple[bool, str, str, Optional[str]]:
+    """
+    Refresh movie metadata from Trakt (persists via get_media_details_from_trakt) and decide
+    whether browser search should run.
+
+    Requires a valid calendar year and a concrete released_date that is not in the future.
+    Otherwise returns proceed=False with a short skip_reason for logs.
+
+    Returns:
+        (proceed, movie_title, imdb_id, skip_reason)
+    """
+    from seerr.trakt import get_media_details_from_trakt
+
+    details = get_media_details_from_trakt(str(tmdb_id), 'movie')
+    if not details:
+        if USE_DATABASE and unified_media_id:
+            update_media_processing_status(
+                unified_media_id,
+                'processing',
+                'awaiting_trakt_release_metadata',
+            )
+        log_warning(
+            "Movie Trakt Gate",
+            f"No Trakt details for movie TMDB {tmdb_id}; skipping search this run.",
+            module="unified_media_manager",
+            function="prepare_movie_from_trakt_for_search",
+        )
+        return (False, fallback_movie_title, fallback_imdb_id or '', 'no Trakt details')
+
+    year = details.get('year')
+    try:
+        year_int = int(year) if year is not None else 0
+    except (TypeError, ValueError):
+        year_int = 0
+
+    if year_int < 1900 or year_int > 2099:
+        if USE_DATABASE and unified_media_id:
+            update_media_processing_status(
+                unified_media_id,
+                'processing',
+                'awaiting_trakt_release_metadata',
+            )
+        log_warning(
+            "Movie Trakt Gate",
+            f"Movie TMDB {tmdb_id} has no valid year from Trakt (got {year!r}); skipping search.",
+            module="unified_media_manager",
+            function="prepare_movie_from_trakt_for_search",
+        )
+        return (False, fallback_movie_title, fallback_imdb_id or '', 'no valid release year from Trakt')
+
+    released_date = details.get('released_date')
+    if released_date is None:
+        if USE_DATABASE and unified_media_id:
+            update_media_processing_status(
+                unified_media_id,
+                'processing',
+                'awaiting_trakt_release_metadata',
+            )
+        log_warning(
+            "Movie Trakt Gate",
+            f"Movie TMDB {tmdb_id} has no released_date from Trakt; skipping search.",
+            module="unified_media_manager",
+            function="prepare_movie_from_trakt_for_search",
+        )
+        return (False, fallback_movie_title, fallback_imdb_id or '', 'no release date from Trakt')
+
+    now = datetime.now(timezone.utc)
+    rd = released_date
+    if getattr(rd, 'tzinfo', None) is None:
+        rd = rd.replace(tzinfo=timezone.utc)
+
+    if rd > now:
+        if USE_DATABASE and unified_media_id:
+            update_media_processing_status(
+                unified_media_id,
+                'unreleased',
+                'unreleased_trakt_future_release',
+            )
+        log_info(
+            "Movie Trakt Gate",
+            f"Movie TMDB {tmdb_id} not released yet (Trakt: {rd.strftime('%Y-%m-%d')}); marking unreleased and skipping search.",
+            module="unified_media_manager",
+            function="prepare_movie_from_trakt_for_search",
+        )
+        return (False, fallback_movie_title, fallback_imdb_id or '', 'release date in the future')
+
+    title = (details.get('title') or '').strip() or fallback_movie_title.split(' (')[0].strip()
+    imdb = (details.get('imdb_id') or fallback_imdb_id or '').strip()
+    display_title = f"{title} ({year_int})"
+
+    log_info(
+        "Movie Trakt Gate",
+        f"Trakt OK for TMDB {tmdb_id}: {display_title}, released {rd.strftime('%Y-%m-%d')}; proceeding to search.",
+        module="unified_media_manager",
+        function="prepare_movie_from_trakt_for_search",
+    )
+    return (True, display_title, imdb, None)
+
 
 def is_media_processed(tmdb_id: int, media_type: str, imdb_id: Optional[str] = None, trakt_id: Optional[str] = None, overseerr_request_id: Optional[int] = None) -> Tuple[bool, Optional[UnifiedMedia]]:
     """

@@ -2421,8 +2421,17 @@ def process_season_page(driver, movie_title, season_num, normalized_seasons, tmd
         from selenium.webdriver.support import expected_conditions as EC
         from selenium.webdriver.common.by import By
         try:
-            WebDriverWait(driver, 10).until(
-                EC.presence_of_element_located((By.XPATH, "//div[@role='status' and contains(@aria-live, 'polite')]"))
+            WebDriverWait(driver, 15).until(
+                lambda d: (
+                    d.execute_script("return document.readyState") == "complete" and
+                    d.execute_script("""
+                        const cards = document.querySelectorAll("div.border-2").length;
+                        const rdish = [...document.querySelectorAll("button")]
+                            .filter(b => /RD \\(\\d+%\\)|Instant RD|DL with RD|Check RD/i.test(b.textContent || ""))
+                            .length;
+                        return (cards > 0) || (rdish > 0);
+                    """)
+                )
             )
             logger.info(f"Page refreshed successfully for Season {season_num}")
         except Exception as e:

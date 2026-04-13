@@ -1207,6 +1207,30 @@ async def process_movie_queue():
                         movie_queue.task_done()
                         continue
                 
+                # Refresh movie metadata from Trakt and require year + concrete release date before search
+                from seerr.unified_media_manager import prepare_movie_from_trakt_for_search, get_media_by_tmdb
+                from seerr.database_queue_manager import database_queue_manager
+                media_for_trakt_gate = get_media_by_tmdb(tmdb_id, media_type) if USE_DATABASE else None
+                proceed_trakt, movie_title, imdb_id, skip_trakt_reason = await asyncio.to_thread(
+                    prepare_movie_from_trakt_for_search,
+                    tmdb_id,
+                    imdb_id or '',
+                    movie_title,
+                    media_for_trakt_gate.id if media_for_trakt_gate else None,
+                )
+                if not proceed_trakt:
+                    log_info(
+                        "Movie Processing",
+                        f"Skipping movie TMDB {tmdb_id}: {skip_trakt_reason}",
+                        module="background_tasks",
+                        function="process_movie_queue",
+                    )
+                    if USE_DATABASE and media_for_trakt_gate:
+                        database_queue_manager._update_queue_tracking(media_for_trakt_gate, False)
+                    task_done_called = True
+                    movie_queue.task_done()
+                    continue
+                
                 log_info("Movie Processing", f"Processing movie request #{processed_count} - IMDb ID: {imdb_id}, Title: {movie_title}", module="background_tasks", function="process_movie_queue")
                 
                 # Set processing stage when item starts processing
