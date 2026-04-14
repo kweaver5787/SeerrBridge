@@ -2978,6 +2978,7 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                     # Process each season individually
                     all_seasons_confirmed = True
                     confirmed_seasons = set()
+                    processable_seasons = 0
                     
                     for season_num in season_numbers:
                         # Check for cancellation before processing each season
@@ -3007,7 +3008,10 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                         # Check if this season is already completed before processing
                         if is_season_completed(movie_title, season_num, tmdb_id):
                             logger.info(f"Season {season_num} is already completed. Skipping processing.")
+                            confirmed_seasons.add(f"Season {season_num}")
                             continue
+
+                        processable_seasons += 1
                         
                         # Check if this season is in-progress and mark as subscribed if needed
                         if is_season_in_progress(movie_title, season_num) and USE_DATABASE:
@@ -3105,6 +3109,9 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                     if confirmed_seasons:
                         logger.info(f"Successfully confirmed seasons: {confirmed_seasons}")
                         return True
+                    elif processable_seasons == 0:
+                        logger.info("No processable aired seasons required work; treating as already available.")
+                        return "already_available"
                     else:
                         # Check if any of the requested seasons are discrepant - if so, don't mark as failed
                         has_discrepant_seasons = False

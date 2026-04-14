@@ -220,9 +220,18 @@ class EnhancedSeasonManager:
             completed_seasons = []
             failed_seasons = []
             
+            def _episode_sort_key(ep: str) -> tuple:
+                try:
+                    if isinstance(ep, str) and ep.startswith('E'):
+                        return (0, int(ep[1:]))
+                except (TypeError, ValueError):
+                    pass
+                return (1, str(ep))
+
             # Process incoming seasons data
             for season_data in seasons_data:
                 season_number = season_data.get('season_number', 0)
+                existing_season = existing_seasons_map.get(season_number, {}) if isinstance(existing_seasons_map.get(season_number, {}), dict) else {}
                 
                 # Check if is_discrepant is manually set (for fallback processing)
                 manually_set_discrepant = season_data.get('is_discrepant', False)
@@ -238,14 +247,37 @@ class EnhancedSeasonManager:
                     # Detect discrepancies automatically
                     is_discrepant, discrepancy_reason, discrepancy_details = EnhancedSeasonManager.detect_season_discrepancy(season_data)
                 
+                # Merge incoming season progress with existing season progress using precedence:
+                # confirmed > failed > unprocessed. Never downgrade existing confirmed episodes.
+                incoming_confirmed = set(season_data.get('confirmed_episodes', []) or [])
+                incoming_failed = set(season_data.get('failed_episodes', []) or [])
+                incoming_unprocessed = set(season_data.get('unprocessed_episodes', []) or [])
+
+                existing_confirmed = set(existing_season.get('confirmed_episodes', []) or [])
+                existing_failed = set(existing_season.get('failed_episodes', []) or [])
+                existing_unprocessed = set(existing_season.get('unprocessed_episodes', []) or [])
+
+                merged_confirmed = existing_confirmed | incoming_confirmed
+                merged_failed = (existing_failed | incoming_failed) - merged_confirmed
+                merged_unprocessed = (existing_unprocessed | incoming_unprocessed) - merged_confirmed - merged_failed
+
+                # Add newly aired episodes as unprocessed, but never clobber prior episode state.
+                aired_episodes = int(season_data.get('aired_episodes', 0) or 0)
+                if aired_episodes > 0:
+                    for ep_num in range(1, aired_episodes + 1):
+                        ep_id = f"E{ep_num:02d}"
+                        if ep_id in merged_confirmed or ep_id in merged_failed:
+                            continue
+                        merged_unprocessed.add(ep_id)
+
                 # Update season data with discrepancy info
                 enhanced_season = EnhancedSeasonManager.create_enhanced_season_data(
                     season_number=season_number,
                     episode_count=season_data.get('episode_count', 0),
-                    aired_episodes=season_data.get('aired_episodes', 0),
-                    confirmed_episodes=season_data.get('confirmed_episodes', []),
-                    failed_episodes=season_data.get('failed_episodes', []),
-                    unprocessed_episodes=season_data.get('unprocessed_episodes', []),
+                    aired_episodes=aired_episodes,
+                    confirmed_episodes=sorted(list(merged_confirmed), key=_episode_sort_key),
+                    failed_episodes=sorted(list(merged_failed), key=_episode_sort_key),
+                    unprocessed_episodes=sorted(list(merged_unprocessed), key=_episode_sort_key),
                     is_discrepant=is_discrepant,
                     discrepancy_reason=discrepancy_reason,
                     discrepancy_details=discrepancy_details,
