@@ -8,13 +8,13 @@
       leave-from-class="opacity-100"
       leave-to-class="opacity-0"
     >
-      <div v-if="isOpen" class="fixed inset-0 z-50 overflow-y-auto p-2 sm:p-4" @click="close">
+      <div v-if="isOpen" class="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4" @click="close">
         <!-- Overlay -->
         <div class="fixed inset-0 bg-black/80 backdrop-blur-sm"></div>
         
         <!-- Modal Content -->
         <div 
-          class="relative mx-auto max-w-4xl my-2 sm:my-4 md:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-hidden"
+          class="relative mx-auto max-w-4xl w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-4 md:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-y-auto touch-pan-y"
           @click.stop
         >
           <!-- Hero Section -->

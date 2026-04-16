@@ -1,10 +1,10 @@
 <template>
   <div
     v-if="isOpen"
-    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+    class="fixed inset-0 z-50 flex items-start justify-center sm:items-center overflow-y-auto overscroll-y-contain pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:p-4 bg-black/60 backdrop-blur-sm"
     @click.self="handleClose"
   >
-    <div class="glass-card-enhanced rounded-2xl p-6 w-full max-w-6xl max-h-[90vh] overflow-hidden flex flex-col">
+    <div class="glass-card-enhanced rounded-2xl p-6 w-full max-w-6xl min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-0 overflow-hidden flex flex-col touch-pan-y">
       <!-- Header -->
       <div class="flex items-center justify-between mb-6 flex-shrink-0">
         <div class="flex-1 min-w-0">

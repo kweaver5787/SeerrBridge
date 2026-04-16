@@ -760,7 +760,7 @@
   />
 
   <!-- Toast Notifications -->
-  <div class="fixed bottom-2 right-2 sm:bottom-4 sm:right-4 z-50 space-y-2 max-h-[calc(100vh-1rem)] sm:max-h-[calc(100vh-2rem)] overflow-hidden pointer-events-none">
+  <div class="fixed bottom-2 right-2 sm:bottom-4 sm:right-4 z-50 space-y-2 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(100dvh-2rem)] overflow-hidden pointer-events-none">
     <TransitionGroup name="toast" tag="div" class="flex flex-col-reverse space-y-reverse space-y-2">
       <div
         v-for="toast in displayedToasts"

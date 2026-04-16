@@ -3,11 +3,11 @@
     <Transition name="modal">
       <div
         v-if="isOpen"
-        class="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/50 backdrop-blur-sm"
+        class="fixed inset-0 z-50 flex items-start justify-center sm:items-center overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4 bg-black/50 backdrop-blur-sm"
         @click="close"
       >
         <div
-          class="relative max-w-4xl w-full max-h-[95vh] sm:max-h-[90vh] overflow-y-auto bg-card border border-border rounded-lg sm:rounded-xl lg:rounded-2xl shadow-2xl"
+          class="relative max-w-4xl w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-y-auto touch-pan-y bg-card border border-border rounded-lg sm:rounded-xl lg:rounded-2xl shadow-2xl my-2 sm:my-0"
           @click.stop
         >
           <!-- Header -->

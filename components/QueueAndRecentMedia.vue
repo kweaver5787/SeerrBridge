@@ -605,13 +605,13 @@
       <!-- ============================================ -->
       
       <!-- Skip Item Confirmation Modal -->
-      <div v-if="showSkipModal" class="fixed inset-0 z-[100] overflow-y-auto p-2 sm:p-4">
+      <div v-if="showSkipModal" class="fixed inset-0 z-[100] overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4">
         <div 
           class="fixed inset-0 bg-black/80 backdrop-blur-sm" 
           @click="showSkipModal = false"
         ></div>
         
-        <div class="relative mx-auto max-w-md my-4 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-hidden">
+        <div class="relative mx-auto max-w-md w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-y-auto touch-pan-y">
           <div class="bg-orange-500/10 border-b border-orange-500/20 px-4 sm:px-6 py-3 sm:py-4">
             <div class="flex items-center gap-2 sm:gap-3">
               <div class="w-8 h-8 sm:w-10 sm:h-10 bg-orange-500/20 rounded-lg sm:rounded-xl flex items-center justify-center">
@@ -664,13 +664,13 @@
       </div>
 
       <!-- Clear Queue Confirmation Modal -->
-      <div v-if="showClearQueueModal" class="fixed inset-0 z-[100] overflow-y-auto p-2 sm:p-4">
+      <div v-if="showClearQueueModal" class="fixed inset-0 z-[100] overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4">
         <div 
           class="fixed inset-0 bg-black/80 backdrop-blur-sm" 
           @click="showClearQueueModal = false"
         ></div>
         
-        <div class="relative mx-auto max-w-md my-4 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-hidden">
+        <div class="relative mx-auto max-w-md w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-y-auto touch-pan-y">
           <div class="bg-red-500/10 border-b border-red-500/20 px-4 sm:px-6 py-3 sm:py-4">
             <div class="flex items-center gap-2 sm:gap-3">
               <div class="w-8 h-8 sm:w-10 sm:h-10 bg-red-500/20 rounded-lg sm:rounded-xl flex items-center justify-center">

@@ -1,5 +1,5 @@
 <template>
-  <div class="fixed top-4 right-4 z-[9999] space-y-2 max-h-[calc(100vh-2rem)] overflow-hidden pointer-events-none">
+  <div class="fixed top-4 right-4 z-[9999] space-y-2 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-hidden pointer-events-none">
     <TransitionGroup name="notification" tag="div" class="flex flex-col-reverse space-y-reverse space-y-2">
       <div
         v-for="notification in displayedNotifications"

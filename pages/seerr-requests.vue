@@ -393,8 +393,8 @@
     />
     
     <!-- Bulk Delete Confirmation Modal -->
-    <div v-if="showBulkDeleteConfirmation" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" @click="showBulkDeleteConfirmation = false">
-      <div class="bg-card border border-border rounded-xl p-6 max-w-md w-full" @click.stop>
+    <div v-if="showBulkDeleteConfirmation" class="fixed inset-0 z-50 flex items-start justify-center sm:items-center overflow-y-auto overscroll-y-contain pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:p-4 bg-black/50 backdrop-blur-sm" @click="showBulkDeleteConfirmation = false">
+      <div class="bg-card border border-border rounded-xl p-6 max-w-md w-full my-2 sm:my-0 min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-y-auto touch-pan-y" @click.stop>
         <h3 class="text-lg font-bold text-foreground mb-2">Delete Requests</h3>
         <p class="text-sm text-muted-foreground mb-4">
           Are you sure you want to delete {{ selectedRequestIds.size }} request{{ selectedRequestIds.size !== 1 ? 's' : '' }}? This action cannot be undone.
@@ -411,8 +411,8 @@
     </div>
     
     <!-- Bulk Retrigger Confirmation Modal -->
-    <div v-if="showBulkRetriggerConfirmation" class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm" @click="showBulkRetriggerConfirmation = false">
-      <div class="bg-card border border-border rounded-xl p-6 max-w-md w-full" @click.stop>
+    <div v-if="showBulkRetriggerConfirmation" class="fixed inset-0 z-50 flex items-start justify-center sm:items-center overflow-y-auto overscroll-y-contain pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:p-4 bg-black/50 backdrop-blur-sm" @click="showBulkRetriggerConfirmation = false">
+      <div class="bg-card border border-border rounded-xl p-6 max-w-md w-full my-2 sm:my-0 min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-y-auto touch-pan-y" @click.stop>
         <h3 class="text-lg font-bold text-foreground mb-2">Retrigger Requests</h3>
         <p class="text-sm text-muted-foreground mb-4">
           Are you sure you want to re-trigger {{ selectedRequestIds.size }} request{{ selectedRequestIds.size !== 1 ? 's' : '' }}? This will update the requests and trigger processing again.

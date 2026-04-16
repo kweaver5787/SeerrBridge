@@ -1,10 +1,10 @@
 <template>
   <div
     v-if="isOpen"
-    class="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+    class="fixed inset-0 z-50 flex items-start justify-center sm:items-center overflow-y-auto overscroll-y-contain pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] sm:p-4 bg-black/60 backdrop-blur-sm"
     @click.self="handleClose"
   >
-    <div class="glass-card-enhanced rounded-2xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+    <div class="glass-card-enhanced rounded-2xl p-6 w-full max-w-2xl min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-0 overflow-y-auto touch-pan-y">
       <!-- Header -->
       <div class="flex items-center justify-between mb-6">
         <h2 class="text-2xl font-bold text-foreground">Add New List</h2>

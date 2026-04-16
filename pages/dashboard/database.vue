@@ -728,13 +728,13 @@
     </div>
 
     <!-- Clear Table Modal -->
-    <div v-if="showClearTableModal" class="fixed inset-0 z-50 overflow-y-auto">
-      <div class="flex min-h-full items-center justify-center p-3 sm:p-4">
+    <div v-if="showClearTableModal" class="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain">
+      <div class="flex min-h-full items-start justify-center sm:items-center p-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:p-4">
         <!-- Backdrop -->
         <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm transition-opacity" @click="showClearTableModal = false"></div>
         
         <!-- Modal panel -->
-        <div class="relative bg-card rounded-xl sm:rounded-2xl shadow-xl border border-border max-w-md w-full transform transition-all max-h-[90vh] overflow-y-auto">
+        <div class="relative bg-card rounded-xl sm:rounded-2xl shadow-xl border border-border max-w-md w-full transform transition-all min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1.5rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-y-auto touch-pan-y my-2 sm:my-0">
           <!-- Modal header -->
           <div class="p-4 sm:p-6 border-b border-border">
             <div class="flex items-center justify-between gap-3">
@@ -801,13 +801,13 @@
     </div>
 
     <!-- Clear Database Modal -->
-    <div v-if="showClearDatabaseModal" class="fixed inset-0 z-50 overflow-y-auto">
-      <div class="flex min-h-full items-center justify-center p-3 sm:p-4">
+    <div v-if="showClearDatabaseModal" class="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain">
+      <div class="flex min-h-full items-start justify-center sm:items-center p-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:p-4">
         <!-- Backdrop -->
         <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm transition-opacity" @click="showClearDatabaseModal = false"></div>
         
         <!-- Modal panel -->
-        <div class="relative bg-card rounded-xl sm:rounded-2xl shadow-xl border border-border max-w-md w-full transform transition-all max-h-[90vh] overflow-y-auto">
+        <div class="relative bg-card rounded-xl sm:rounded-2xl shadow-xl border border-border max-w-md w-full transform transition-all min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1.5rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-y-auto touch-pan-y my-2 sm:my-0">
           <!-- Modal header -->
           <div class="p-4 sm:p-6 border-b border-border">
             <div class="flex items-center justify-between gap-3">
@@ -874,13 +874,13 @@
     </div>
 
     <!-- Table Structure Modal -->
-    <div v-if="showStructureModal" class="fixed inset-0 z-50 overflow-y-auto">
-      <div class="flex min-h-full items-center justify-center p-3 sm:p-4">
+    <div v-if="showStructureModal" class="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain">
+      <div class="flex min-h-full items-start justify-center sm:items-center p-3 pt-[max(0.75rem,env(safe-area-inset-top))] pb-[max(0.75rem,env(safe-area-inset-bottom))] pl-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] sm:p-4">
         <!-- Backdrop -->
         <div class="fixed inset-0 bg-gray-900/50 backdrop-blur-sm transition-opacity" @click="showStructureModal = false"></div>
         
         <!-- Modal panel -->
-        <div class="relative bg-card rounded-xl sm:rounded-2xl shadow-xl border border-border max-w-4xl w-full transform transition-all max-h-[90vh] overflow-hidden flex flex-col">
+        <div class="relative bg-card rounded-xl sm:rounded-2xl shadow-xl border border-border max-w-4xl w-full transform transition-all min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1.5rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-hidden flex flex-col touch-pan-y my-2 sm:my-0">
           <!-- Modal header -->
           <div class="p-4 sm:p-6 border-b border-border flex-shrink-0">
             <div class="flex items-center justify-between gap-3">

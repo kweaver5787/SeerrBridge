@@ -358,13 +358,13 @@
     </div>
 
     <!-- Media Details Modal -->
-    <div v-if="showDetailsModal" class="fixed inset-0 z-50 overflow-y-auto">
-      <div class="flex items-center justify-center min-h-screen pt-4 px-4 pb-20 text-center sm:block sm:p-0">
+    <div v-if="showDetailsModal" class="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain">
+      <div class="flex items-start justify-center sm:items-center min-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] px-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] pb-[max(5rem,env(safe-area-inset-bottom))] text-center sm:block sm:min-h-screen sm:p-0 sm:px-4 sm:pb-20">
         <!-- Background overlay -->
         <div class="fixed inset-0 bg-gray-500 bg-opacity-75 transition-opacity" @click="showDetailsModal = false"></div>
 
         <!-- Modal panel -->
-        <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full">
+        <div class="inline-block align-bottom bg-white dark:bg-gray-800 rounded-lg text-left overflow-y-auto touch-pan-y max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-6rem)] sm:max-h-none sm:overflow-hidden shadow-xl transform transition-all sm:my-8 sm:align-middle sm:max-w-lg sm:w-full w-full max-w-[calc(100vw-2rem)]">
           <!-- Header -->
           <div class="bg-white dark:bg-gray-800 px-4 pt-5 pb-4 sm:p-6 sm:pb-4 border-b border-gray-200 dark:border-gray-700">
             <div class="flex items-center justify-between">

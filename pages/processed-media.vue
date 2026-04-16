@@ -589,7 +589,7 @@
     leave-from-class="opacity-100"
     leave-to-class="opacity-0"
   >
-    <div v-if="showDetailsModal" class="fixed inset-0 z-50 overflow-y-auto">
+    <div v-if="showDetailsModal" class="fixed inset-0 z-50 overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4">
       <!-- Overlay -->
       <div 
         class="fixed inset-0 bg-black/80 backdrop-blur-sm" 
@@ -604,7 +604,7 @@
       ></div>
       
       <!-- Modal Content -->
-      <div class="relative mx-auto max-w-4xl min-h-screen sm:min-h-0 sm:my-4 lg:my-8 bg-card sm:rounded-xl lg:rounded-2xl xl:rounded-3xl shadow-2xl overflow-visible flex flex-col">
+      <div class="relative mx-auto max-w-4xl w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-4 lg:my-8 bg-card sm:rounded-xl lg:rounded-2xl xl:rounded-3xl shadow-2xl overflow-y-auto touch-pan-y flex flex-col">
         <!-- Hero -->
         <div v-if="selectedMedia" class="relative min-h-[200px] sm:h-64 lg:h-80 overflow-hidden bg-gradient-to-br from-primary/20 to-primary/10 flex-shrink-0">
           <img
@@ -648,7 +648,7 @@
                   <div 
                     v-if="showActionMenu" 
                     class="fixed w-[calc(100vw-2rem)] sm:w-56 lg:w-64 max-w-[280px] sm:max-w-none bg-background rounded-lg sm:rounded-xl border border-border shadow-2xl p-2 z-[9999]" 
-                    :style="`top: ${actionMenuPosition.top}px; right: ${actionMenuPosition.right}px; max-height: calc(100vh - 2rem); overflow-y: auto;`"
+                    :style="`top: ${actionMenuPosition.top}px; right: ${actionMenuPosition.right}px; max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem); overflow-y: auto;`"
                     @click.stop
                   >
                   <!-- Processing Status -->
@@ -1288,7 +1288,7 @@
     leave-from-class="opacity-100"
     leave-to-class="opacity-0"
   >
-    <div v-if="showDeleteConfirmation" class="fixed inset-0 z-[100] overflow-y-auto p-2 sm:p-4">
+    <div v-if="showDeleteConfirmation" class="fixed inset-0 z-[100] overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4">
       <!-- Overlay -->
       <div 
         class="fixed inset-0 bg-black/80 backdrop-blur-sm" 
@@ -1296,7 +1296,7 @@
       ></div>
       
       <!-- Confirmation Modal -->
-      <div class="relative mx-auto max-w-md my-4 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-hidden">
+      <div class="relative mx-auto max-w-md w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-y-auto touch-pan-y">
         <!-- Header -->
         <div class="bg-red-500/10 border-b border-red-500/20 px-4 sm:px-6 py-3 sm:py-4">
           <div class="flex items-center gap-2 sm:gap-3">
@@ -1427,7 +1427,7 @@
     leave-from-class="opacity-100"
     leave-to-class="opacity-0"
   >
-    <div v-if="showBulkDeleteConfirmation" class="fixed inset-0 z-[100] overflow-y-auto p-2 sm:p-4">
+    <div v-if="showBulkDeleteConfirmation" class="fixed inset-0 z-[100] overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4">
       <!-- Overlay -->
       <div 
         class="fixed inset-0 bg-black/80 backdrop-blur-sm" 
@@ -1435,7 +1435,7 @@
       ></div>
       
       <!-- Confirmation Modal -->
-      <div class="relative mx-auto max-w-md my-4 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-hidden">
+      <div class="relative mx-auto max-w-md w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-y-auto touch-pan-y">
         <!-- Header -->
         <div class="bg-red-500/10 border-b border-red-500/20 px-4 sm:px-6 py-3 sm:py-4">
           <div class="flex items-center gap-2 sm:gap-3">
@@ -1535,7 +1535,7 @@
     leave-from-class="opacity-100"
     leave-to-class="opacity-0"
   >
-    <div v-if="showBulkIgnoreConfirmation" class="fixed inset-0 z-[100] overflow-y-auto p-2 sm:p-4">
+    <div v-if="showBulkIgnoreConfirmation" class="fixed inset-0 z-[100] overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4">
       <!-- Overlay -->
       <div 
         class="fixed inset-0 bg-black/80 backdrop-blur-sm" 
@@ -1543,7 +1543,7 @@
       ></div>
       
       <!-- Confirmation Modal -->
-      <div class="relative mx-auto max-w-md my-4 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-hidden">
+      <div class="relative mx-auto max-w-md w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-8 bg-card rounded-xl sm:rounded-2xl lg:rounded-3xl shadow-2xl overflow-y-auto touch-pan-y">
         <!-- Header -->
         <div class="bg-amber-500/10 border-b border-amber-500/20 px-4 sm:px-6 py-3 sm:py-4">
           <div class="flex items-center gap-2 sm:gap-3">
@@ -1638,12 +1638,12 @@
     leave-from-class="opacity-100"
     leave-to-class="opacity-0"
   >
-    <div v-if="showMarkCompleteModal && selectedMedia" class="fixed inset-0 z-[100] overflow-y-auto">
+    <div v-if="showMarkCompleteModal && selectedMedia" class="fixed inset-0 z-[100] overflow-y-auto overscroll-y-contain pt-[max(0.5rem,env(safe-area-inset-top))] pb-[max(0.5rem,env(safe-area-inset-bottom))] pl-[max(0.5rem,env(safe-area-inset-left))] pr-[max(0.5rem,env(safe-area-inset-right))] sm:p-4">
       <!-- Backdrop -->
       <div class="fixed inset-0 bg-black/50 backdrop-blur-sm" @click="showMarkCompleteModal = false"></div>
       
       <!-- Modal Content -->
-      <div class="relative mx-auto max-w-3xl my-8 bg-card rounded-xl shadow-2xl overflow-hidden">
+      <div class="relative mx-auto max-w-3xl w-full min-h-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-1rem)] sm:max-h-[calc(90dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] my-2 sm:my-8 bg-card rounded-xl shadow-2xl overflow-y-auto touch-pan-y">
         <!-- Header -->
         <div class="bg-gradient-to-r from-primary/20 to-primary/10 p-4 sm:p-6 border-b border-border">
           <div class="flex items-center justify-between">
@@ -1661,7 +1661,7 @@
         </div>
         
         <!-- Content -->
-        <div class="p-4 sm:p-6 max-h-[60vh] overflow-y-auto">
+        <div class="p-4 sm:p-6">
           <p class="text-sm text-muted-foreground mb-4">
             Select which episodes or seasons to mark as complete. Episodes that are failed or unprocessed will be marked as confirmed.
           </p>

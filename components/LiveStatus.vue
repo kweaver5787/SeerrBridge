@@ -36,7 +36,7 @@
       <!-- Hover Tooltip Modal -->
       <div 
         v-if="showTooltip && serviceStatus" 
-        class="live-status-modal fixed z-[99999] sm:w-80 lg:w-96 max-h-[85vh] sm:max-h-none bg-popover border border-border rounded-lg shadow-lg overflow-hidden flex flex-col"
+        class="live-status-modal fixed z-[99999] sm:w-80 lg:w-96 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] sm:max-h-none bg-popover border border-border rounded-lg shadow-lg overflow-hidden flex flex-col touch-pan-y"
         :style="modalStyle"
         @mouseenter="handleModalMouseEnter"
         @mouseleave="handleModalMouseLeave"
@@ -273,8 +273,8 @@ const calculateModalPosition = () => {
     modalStyle.value = {
       left: '1rem',
       right: '1rem',
-      top: '50%',
-      transform: 'translateY(-50%)'
+      top: 'max(1rem, env(safe-area-inset-top))',
+      transform: 'none'
     }
     return
   }

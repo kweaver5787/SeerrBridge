@@ -25,7 +25,7 @@
       <!-- Dropdown -->
       <div 
         v-if="isOpen"
-        class="fixed z-[99999] inset-x-4 sm:inset-x-auto top-1/2 sm:top-auto sm:right-4 sm:mt-2 -translate-y-1/2 sm:translate-y-0 w-[calc(100vw-2rem)] sm:w-80 sm:max-w-none max-h-[85vh] sm:max-h-none glass-card p-3 sm:p-4 animate-fade-in overflow-hidden flex flex-col"
+        class="fixed z-[99999] inset-x-4 sm:inset-x-auto top-[max(1rem,env(safe-area-inset-top))] sm:top-auto sm:right-4 sm:mt-2 translate-y-0 w-[calc(100vw-2rem)] sm:w-80 sm:max-w-none max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] sm:max-h-none glass-card p-3 sm:p-4 animate-fade-in overflow-hidden flex flex-col touch-pan-y"
         :style="dropdownStyle"
       >
       <div class="flex items-center justify-between mb-3 sm:mb-4 flex-shrink-0">

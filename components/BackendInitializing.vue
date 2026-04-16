@@ -1,6 +1,6 @@
 <template>
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-background/80 backdrop-blur-sm">
-    <div class="glass-card-enhanced rounded-2xl p-8 md:p-12 max-w-md w-full mx-4 animate-fade-in-up">
+  <div class="fixed inset-0 z-50 flex items-start justify-center sm:items-center overflow-y-auto overscroll-y-contain pt-[max(1rem,env(safe-area-inset-top))] pb-[max(1rem,env(safe-area-inset-bottom))] px-4 bg-background/80 backdrop-blur-sm">
+    <div class="glass-card-enhanced rounded-2xl p-8 md:p-12 max-w-md w-full mx-auto my-4 sm:my-0 max-h-[calc(100dvh-env(safe-area-inset-top)-env(safe-area-inset-bottom)-2rem)] overflow-y-auto touch-pan-y animate-fade-in-up">
       <div class="flex flex-col items-center space-y-6">
         <!-- Animated Logo/Icon -->
         <div class="relative">
