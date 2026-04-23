@@ -31,7 +31,8 @@ from seerr.utils import (
     is_complete_word_match,
     normalize_season,
     match_complete_seasons,
-    match_single_season
+    match_single_season,
+    build_dynamic_torrent_filter
 )
 from seerr.background_tasks import search_individual_episodes
 
@@ -1491,8 +1492,9 @@ def process_individual_episodes_fallback(driver, movie_title, season_num, normal
                     EC.presence_of_element_located((By.ID, "query"))
                 )
                 episode_filter = f"S{season_num:02d}{episode_id}"  # e.g., "S03E01"
-                if TORRENT_FILTER_REGEX:
-                    full_filter = f"{TORRENT_FILTER_REGEX} {episode_filter}"
+                dynamic_base_filter = build_dynamic_torrent_filter(TORRENT_FILTER_REGEX, movie_title)
+                if dynamic_base_filter:
+                    full_filter = f"{dynamic_base_filter} {episode_filter}"
                 else:
                     full_filter = episode_filter
                 
@@ -3260,7 +3262,7 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                 if year is not None:
                     try:
                         year_regex = f"({year - 1}|{year}|{year + 1})"
-                        base = (TORRENT_FILTER_REGEX or "").strip()
+                        base = (build_dynamic_torrent_filter(TORRENT_FILTER_REGEX, movie_title) or "").strip()
                         full_filter = f"{base} {year_regex}".strip() if base else year_regex
                         filter_input = WebDriverWait(driver, 3).until(
                             EC.presence_of_element_located((By.ID, "query"))

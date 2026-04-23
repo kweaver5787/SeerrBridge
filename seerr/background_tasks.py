@@ -24,7 +24,7 @@ from seerr.task_config_manager import task_config
 from seerr.browser import driver, click_show_more_results, check_red_buttons, prioritize_buttons_in_box
 from seerr.overseerr import get_overseerr_media_requests, mark_completed
 from seerr.trakt import get_media_details_from_trakt, get_season_details_from_trakt, check_next_episode_aired, get_all_seasons_from_trakt
-from seerr.utils import parse_requested_seasons, normalize_season, extract_season, clean_title
+from seerr.utils import parse_requested_seasons, normalize_season, extract_season, clean_title, build_dynamic_torrent_filter
 from seerr.database import get_db, LibraryStats, QueueStatus
 from seerr.image_utils import fetch_trakt_show_images, fetch_trakt_movie_images, store_show_image, store_media_images, should_update_image
 from seerr.db_logger import log_info, log_success, log_warning, log_error, log_critical, log_debug
@@ -3839,7 +3839,8 @@ async def search_individual_episodes(imdb_id, movie_title, season_number, season
                 EC.presence_of_element_located((By.ID, "query"))
             )
             episode_filter = f"S{season_number:02d}{episode_id}"  # e.g., "S01E01"
-            full_filter = f"{TORRENT_FILTER_REGEX} {episode_filter}"
+            dynamic_base_filter = build_dynamic_torrent_filter(TORRENT_FILTER_REGEX, movie_title)
+            full_filter = f"{dynamic_base_filter} {episode_filter}".strip() if dynamic_base_filter else episode_filter
             type_slowly(driver, filter_input, full_filter)  # Replace send_keys with slow typing
             logger.info(f"Applied filter: {full_filter}")
             

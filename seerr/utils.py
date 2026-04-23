@@ -247,6 +247,72 @@ def normalize_title_for_library_search(title, episode_id=None):
     return t
 
 
+def build_dynamic_torrent_filter(base_filter_regex, media_title):
+    """
+    Build a per-title torrent filter by removing title words from the first
+    include-token lookahead block: (?=.*(?:token1|token2|...)).
+
+    This prevents false negatives when a title itself contains one of the
+    blocked release-group words (e.g., "Galaxy", "Panda", "Pirates").
+    """
+    if not base_filter_regex or not media_title:
+        return base_filter_regex
+
+    # Only adjust the first include-token lookahead block.
+    lookahead_pattern = re.compile(r"\(\?=\.\*\(\?:((?:\\.|[^)])*)\)\)")
+    match = lookahead_pattern.search(base_filter_regex)
+    if not match:
+        return base_filter_regex
+
+    token_block = match.group(1)
+    if token_block is None:
+        return base_filter_regex
+
+    raw_tokens = [token for token in token_block.split("|") if token]
+    if not raw_tokens:
+        return base_filter_regex
+
+    # Deduplicate while preserving original order.
+    deduped_tokens = []
+    seen = set()
+    for token in raw_tokens:
+        key = token.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped_tokens.append(token)
+
+    normalized_title = re.sub(r"[^a-z0-9]+", " ", media_title.lower()).strip()
+    if not normalized_title:
+        return base_filter_regex
+
+    def token_in_title(token):
+        normalized_token = re.sub(r"[^a-z0-9]+", " ", token.lower()).strip()
+        if not normalized_token:
+            return False
+        return re.search(
+            rf"(?<![a-z0-9]){re.escape(normalized_token)}(?![a-z0-9])",
+            normalized_title,
+        ) is not None
+
+    filtered_tokens = [token for token in deduped_tokens if not token_in_title(token)]
+    if len(filtered_tokens) == len(deduped_tokens):
+        return base_filter_regex
+
+    removed_tokens = [token for token in deduped_tokens if token not in filtered_tokens]
+    logger.info(
+        f"Dynamic filter: removed title token(s) {removed_tokens} from include list for '{media_title}'"
+    )
+
+    replacement = f"(?=.*(?:{'|'.join(filtered_tokens)}))" if filtered_tokens else ""
+    updated_filter = (
+        base_filter_regex[:match.start()] + replacement + base_filter_regex[match.end():]
+    )
+
+    # Keep spacing clean after replacing/removing the lookahead block.
+    return re.sub(r"\s{2,}", " ", updated_filter).strip()
+
+
 def normalize_title(title, target_lang='en'):
     """
     Normalizes the title by ensuring there are no unnecessary spaces or dots,
