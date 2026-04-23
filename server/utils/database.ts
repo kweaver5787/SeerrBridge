@@ -1,9 +1,9 @@
 import mysql from 'mysql2/promise'
 
-let connection: mysql.Connection | null = null
+let pool: mysql.Pool | null = null
 
-export async function getDatabaseConnection(): Promise<mysql.Connection> {
-  if (!connection) {
+export async function getDatabaseConnection(): Promise<mysql.Pool> {
+  if (!pool) {
     const config = useRuntimeConfig()
     
     // Default to 3306 for unified container (MySQL runs on localhost:3306 inside container)
@@ -16,7 +16,11 @@ export async function getDatabaseConnection(): Promise<mysql.Connection> {
       database: config.dbName || process.env.DB_NAME || 'seerrbridge',
       charset: 'utf8mb4',
       connectTimeout: 10000, // 10 second timeout
-      reconnect: true
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0,
+      enableKeepAlive: true,
+      keepAliveInitialDelay: 0
     }
     
     // DO NOT log database password - only log non-sensitive connection info
@@ -29,10 +33,10 @@ export async function getDatabaseConnection(): Promise<mysql.Connection> {
     })
     
     try {
-      connection = await mysql.createConnection(connectionConfig)
-      // Test the connection
-      await connection.execute('SELECT 1')
-      console.log('Database connection established successfully')
+      pool = mysql.createPool(connectionConfig)
+      // Validate pool connectivity at creation time.
+      await pool.execute('SELECT 1')
+      console.log('Database connection pool established successfully')
     } catch (error: any) {
       console.error('Failed to connect to database:', {
         message: error.message,
@@ -43,18 +47,27 @@ export async function getDatabaseConnection(): Promise<mysql.Connection> {
         port: connectionConfig.port,
         database: connectionConfig.database
       })
-      connection = null // Reset connection on error
+      pool = null // Reset pool on error
       throw error
+    }
+  } else {
+    try {
+      // Ensure the pool is still healthy before handing it out.
+      await pool.execute('SELECT 1')
+    } catch {
+      // If pooled connections became stale after a long idle period, rebuild the pool.
+      pool = null
+      return getDatabaseConnection()
     }
   }
   
-  return connection
+  return pool
 }
 
 export async function closeDatabaseConnection(): Promise<void> {
-  if (connection) {
-    await connection.end()
-    connection = null
+  if (pool) {
+    await pool.end()
+    pool = null
   }
 }
 
