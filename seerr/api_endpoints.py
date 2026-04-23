@@ -48,6 +48,34 @@ async def refresh_tasks():
         log_error("API Error", f"Error refreshing tasks: {e}", module="api_endpoints", function="refresh_tasks")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.post("/manual-processing-run")
+async def manual_processing_run():
+    """
+    Manually run the same maintenance flow scheduled at 3am.
+    """
+    try:
+        from seerr.background_tasks import daily_3am_maintenance
+        log_info(
+            "API",
+            "Manual Processing Run requested from dashboard",
+            module="api_endpoints",
+            function="manual_processing_run",
+        )
+        await daily_3am_maintenance()
+        return {
+            "success": True,
+            "message": "Manual Processing Run completed successfully"
+        }
+    except Exception as e:
+        log_error(
+            "API Error",
+            f"Error running manual processing flow: {e}",
+            module="api_endpoints",
+            function="manual_processing_run",
+        )
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/task-config")
 async def get_task_config():
     """Get current task configuration"""

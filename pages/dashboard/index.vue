@@ -12,6 +12,22 @@
       </div>
       
       <div class="flex items-center gap-2 sm:gap-3">
+        <Button
+          @click="handleManualProcessingRun"
+          :disabled="isManualProcessingRun"
+          variant="outline"
+          size="sm"
+          class="gap-1.5 sm:gap-2"
+        >
+          <AppIcon
+            icon="lucide:play"
+            size="16"
+            class="sm:w-[18px] sm:h-[18px]"
+            :class="{ 'animate-pulse': isManualProcessingRun }"
+          />
+          <span class="hidden sm:inline">Manual Processing Run</span>
+          <span class="sm:hidden">Run</span>
+        </Button>
         <Button 
           @click="handleRefresh"
           :disabled="isRefreshing"
@@ -35,6 +51,9 @@
           <span class="hidden sm:inline">Settings</span>
         </NuxtLink>
       </div>
+    </div>
+    <div v-if="manualProcessingRunMessage" class="text-xs sm:text-sm" :class="manualProcessingRunSuccess ? 'text-green-500' : 'text-destructive'">
+      {{ manualProcessingRunMessage }}
     </div>
     
     <!-- Stats Cards -->
@@ -97,6 +116,9 @@
 import Button from '~/components/ui/Button.vue'
 
 const isRefreshing = ref(false)
+const isManualProcessingRun = ref(false)
+const manualProcessingRunMessage = ref('')
+const manualProcessingRunSuccess = ref(false)
 
 // Get processing status - handle errors gracefully
 const processingStatusResult = useProcessingStatus()
@@ -148,6 +170,32 @@ const handleRefresh = async () => {
     console.error('Error refreshing dashboard:', error)
   } finally {
     isRefreshing.value = false
+  }
+}
+
+const handleManualProcessingRun = async () => {
+  isManualProcessingRun.value = true
+  manualProcessingRunMessage.value = ''
+  manualProcessingRunSuccess.value = false
+
+  try {
+    const response = await $fetch('/api/manual-processing-run', {
+      method: 'POST'
+    })
+
+    if (!response?.success) {
+      throw new Error(response?.details || response?.error || 'Manual Processing Run failed')
+    }
+
+    manualProcessingRunSuccess.value = true
+    manualProcessingRunMessage.value = response?.message || 'Manual Processing Run started successfully.'
+    await refreshProcessing()
+  } catch (error: any) {
+    manualProcessingRunSuccess.value = false
+    manualProcessingRunMessage.value = error?.message || 'Failed to trigger Manual Processing Run.'
+    console.error('Error triggering Manual Processing Run:', error)
+  } finally {
+    isManualProcessingRun.value = false
   }
 }
 
