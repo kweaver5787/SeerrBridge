@@ -2,7 +2,10 @@ import { defineEventHandler } from 'h3'
 
 export default defineEventHandler(async () => {
   try {
-    const pythonBackendUrl = process.env.PYTHON_BACKEND_URL || 'http://seerrbridge:8777'
+    const pythonBackendUrl =
+      process.env.SEERRBRIDGE_URL ||
+      process.env.PYTHON_BACKEND_URL ||
+      'http://localhost:8777'
 
     const response = await fetch(`${pythonBackendUrl}/api/manual-processing-run`, {
       method: 'POST',

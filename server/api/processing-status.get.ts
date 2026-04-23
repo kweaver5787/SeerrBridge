@@ -126,6 +126,14 @@ export default defineEventHandler(async (event) => {
     // Process items
     const processingItemsList = (Array.isArray(processingItems) ? processingItems : []).map(processItem)
     const queuedItemsList = (Array.isArray(queuedItems) ? queuedItems : []).map(processItem)
+    const passiveProcessingStages = new Set([
+      'awaiting_trakt_release_metadata',
+      'trakt_pending'
+    ])
+    const activeProcessingItemsList = processingItemsList.filter((item: any) => {
+      const stage = (item.processing_stage || '').toString()
+      return !passiveProcessingStages.has(stage)
+    })
     
     // Clean up stale queue items (items marked as in_queue but shouldn't be)
     // This happens if items complete but is_in_queue wasn't cleared
@@ -142,7 +150,7 @@ export default defineEventHandler(async (event) => {
     
     // Combine all items for queuedItems (processing first, then queued)
     const allQueuedItems = [
-      ...processingItemsList.map((item: any) => ({ ...item, queue_status: 'processing' })),
+      ...activeProcessingItemsList.map((item: any) => ({ ...item, queue_status: 'processing' })),
       ...queuedItemsList.map((item: any) => ({ ...item, queue_status: 'queued' }))
     ]
     
@@ -158,8 +166,10 @@ export default defineEventHandler(async (event) => {
     queueStats.total_queued = totalQueued
     // total_queue_max is already set above from queue_status table
     
-    // Log discrepancy if queue_status table differs significantly from actual database state
-    // This helps detect synchronization issues
+    // Log discrepancy if queue_status table differs significantly from actual
+    // database queue state (compare like-for-like using is_in_queue=true rows only).
+    // We intentionally do NOT compare against total displayed items because that also
+    // includes processing rows that may no longer be marked in_queue.
     try {
       const [movieQueueStatus] = await db.execute(`
         SELECT queue_size
@@ -175,11 +185,35 @@ export default defineEventHandler(async (event) => {
         LIMIT 1
       `)
       
-      const dbMovieSize = (Array.isArray(movieQueueStatus) && movieQueueStatus.length > 0) ? (movieQueueStatus[0]?.queue_size || 0) : 0
-      const dbTvSize = (Array.isArray(tvQueueStatus) && tvQueueStatus.length > 0) ? (tvQueueStatus[0]?.queue_size || 0) : 0
-      
-      if (Math.abs(dbMovieSize - movieQueueSize) > 2 || Math.abs(dbTvSize - tvQueueSize) > 2) {
-        console.warn(`Queue synchronization discrepancy detected: queue_status table shows ${dbMovieSize} movies, ${dbTvSize} TV, but actual database has ${movieQueueSize} movies, ${tvQueueSize} TV`)
+      const dbMovieSize = (Array.isArray(movieQueueStatus) && movieQueueStatus.length > 0)
+        ? (movieQueueStatus[0]?.queue_size || 0)
+        : 0
+      const dbTvSize = (Array.isArray(tvQueueStatus) && tvQueueStatus.length > 0)
+        ? (tvQueueStatus[0]?.queue_size || 0)
+        : 0
+
+      const queueTrackedItems = [...activeProcessingItemsList, ...queuedItemsList].filter((item: any) => item.is_in_queue)
+      const actualQueueTrackedMovieSize = queueTrackedItems.filter((item: any) => item.media_type === 'movie').length
+      const actualQueueTrackedTvSize = queueTrackedItems.filter((item: any) => item.media_type === 'tv').length
+
+      if (
+        Math.abs(dbMovieSize - actualQueueTrackedMovieSize) > 2 ||
+        Math.abs(dbTvSize - actualQueueTrackedTvSize) > 2
+      ) {
+        // Self-heal queue_status counters when drift is detected.
+        await db.execute(`
+          UPDATE queue_status
+          SET queue_size = ?, is_processing = ?, updated_at = NOW()
+          WHERE queue_type = 'movie'
+        `, [actualQueueTrackedMovieSize, activeProcessingItemsList.length > 0 ? 1 : 0])
+        await db.execute(`
+          UPDATE queue_status
+          SET queue_size = ?, is_processing = ?, updated_at = NOW()
+          WHERE queue_type = 'tv'
+        `, [actualQueueTrackedTvSize, activeProcessingItemsList.length > 0 ? 1 : 0])
+        console.warn(
+          `Queue synchronization discrepancy detected: queue_status table shows ${dbMovieSize} movies, ${dbTvSize} TV, but actual queue-tracked database rows have ${actualQueueTrackedMovieSize} movies, ${actualQueueTrackedTvSize} TV`
+        )
       }
     } catch (validationError) {
       // Ignore validation errors, not critical
@@ -209,7 +243,7 @@ export default defineEventHandler(async (event) => {
     }
     
     // Sort items by priority: more specific stages first, then by most recent activity
-    const sortedItems = [...processingItemsList].sort((a, b) => {
+    const sortedItems = [...activeProcessingItemsList].sort((a, b) => {
       const priorityA = getStagePriority(a.processing_stage)
       const priorityB = getStagePriority(b.processing_stage)
       
@@ -257,16 +291,20 @@ export default defineEventHandler(async (event) => {
       queue_status: item.queue_status || (item.status === 'processing' ? 'processing' : 'queued')
     })
     
+    const activeMoviesProcessing = activeProcessingItemsList.filter((item: any) => item.media_type === 'movie').length
+    const activeTvProcessing = activeProcessingItemsList.filter((item: any) => item.media_type === 'tv').length
+    const activeTotalProcessing = activeMoviesProcessing + activeTvProcessing
+
     return {
       success: true,
       data: {
         currentItem: currentItem ? formatItem({ ...currentItem, queue_status: 'processing' }) : null,
         queuedItems: allQueuedItems.map(formatItem),
-        processingItems: processingItemsList.map(formatItem),
+        processingItems: activeProcessingItemsList.map(formatItem),
         stats: {
-          total_processing: stats[0]?.total_processing || 0,
-          movies_processing: stats[0]?.movies_processing || 0,
-          tv_processing: stats[0]?.tv_processing || 0
+          total_processing: activeTotalProcessing,
+          movies_processing: activeMoviesProcessing,
+          tv_processing: activeTvProcessing
         },
         queueStats
       }
