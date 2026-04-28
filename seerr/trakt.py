@@ -429,7 +429,8 @@ def get_all_seasons_from_trakt(trakt_show_id: str) -> Optional[List[dict]]:
         trakt_api_calls = 0
         last_reset_time = time.time()
     
-    url = f"https://api.trakt.tv/shows/{trakt_show_id}/seasons?extended=episodes"
+    # Use full episode payload so first_aired is present for aired-episode calculations.
+    url = f"https://api.trakt.tv/shows/{trakt_show_id}/seasons?extended=full,episodes"
     headers = {
         "Content-type": "application/json",
         "trakt-api-key": TRAKT_API_KEY,

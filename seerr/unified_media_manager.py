@@ -1974,26 +1974,30 @@ def refresh_tv_show_air_dates_from_trakt(media_id: int) -> bool:
                 if d <= today_utc:
                     aired_count += 1
 
-            unprocessed_base = [f"E{str(i).zfill(2)}" for i in range(1, aired_count + 1)] if aired_count > 0 else []
             now_iso = datetime.utcnow().isoformat()
 
             if season_number in existing_by_season:
                 ex = existing_by_season[season_number]
                 confirmed = set(ex.get('confirmed_episodes', []) or [])
                 failed = set(ex.get('failed_episodes', []) or [])
+                # Never regress previously confirmed episodes to "unaired" if Trakt
+                # temporarily reports fewer aired episodes than already confirmed.
+                effective_aired = max(aired_count, len(confirmed))
+                unprocessed_base = [f"E{str(i).zfill(2)}" for i in range(1, effective_aired + 1)] if effective_aired > 0 else []
                 unprocessed = [e for e in unprocessed_base if e not in confirmed and e not in failed]
                 ex['episode_count'] = episode_count
-                ex['aired_episodes'] = aired_count
+                ex['aired_episodes'] = effective_aired
                 ex_unprocessed = set(ex.get('unprocessed_episodes', []) or [])
                 for e in unprocessed:
                     ex_unprocessed.add(e)
                 ex['unprocessed_episodes'] = sorted(list(ex_unprocessed))
                 ex['last_checked'] = now_iso
                 ex['updated_at'] = now_iso
-                ex['status'] = 'processing' if unprocessed or (aired_count < episode_count) else ('completed' if aired_count >= episode_count else 'pending')
-                if unprocessed or (aired_count < episode_count):
+                ex['status'] = 'processing' if unprocessed else ('pending' if effective_aired < episode_count else 'completed')
+                if unprocessed or (effective_aired < episode_count):
                     ex['is_complete'] = False
             else:
+                unprocessed_base = [f"E{str(i).zfill(2)}" for i in range(1, aired_count + 1)] if aired_count > 0 else []
                 new_season = EnhancedSeasonManager.create_enhanced_season_data(
                     season_number=season_number,
                     episode_count=episode_count,
@@ -2003,7 +2007,7 @@ def refresh_tv_show_air_dates_from_trakt(media_id: int) -> bool:
                     unprocessed_episodes=unprocessed_base,
                     is_discrepant=False
                 )
-                new_season['status'] = 'processing' if unprocessed_base or (aired_count < episode_count) else ('pending' if aired_count < episode_count else 'completed')
+                new_season['status'] = 'processing' if unprocessed_base else ('pending' if aired_count < episode_count else 'completed')
                 new_season['last_checked'] = now_iso
                 new_season['updated_at'] = now_iso
                 existing_seasons_data.append(new_season)
