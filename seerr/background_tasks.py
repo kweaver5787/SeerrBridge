@@ -1467,6 +1467,59 @@ async def process_tv_queue():
                 processed_count += 1
                 
                 log_info("TV Processing", f"Processing TV request #{processed_count} - IMDb ID: {imdb_id}, Title: {movie_title}", module="background_tasks", function="process_tv_queue")
+
+                # Normalize/override season scope from live DB state to avoid stale queue payloads
+                # (e.g. old startup-requeue Requested Seasons values) from skipping newly aired episodes.
+                if USE_DATABASE and media_type == 'tv':
+                    try:
+                        from seerr.unified_media_manager import get_media_by_tmdb
+                        media_record = get_media_by_tmdb(tmdb_id, media_type)
+                        if media_record:
+                            seasons_data = media_record.seasons_data or []
+                            if isinstance(seasons_data, list):
+                                seasons_need_processing = []
+                                for season in seasons_data:
+                                    if not isinstance(season, dict):
+                                        continue
+                                    season_number = season.get('season_number')
+                                    unprocessed_episodes = season.get('unprocessed_episodes') or []
+                                    if season_number is None:
+                                        continue
+                                    if isinstance(unprocessed_episodes, list) and len(unprocessed_episodes) > 0:
+                                        try:
+                                            seasons_need_processing.append(int(season_number))
+                                        except (TypeError, ValueError):
+                                            continue
+
+                                if seasons_need_processing:
+                                    normalized_extra = extra_data
+                                    if isinstance(normalized_extra, str):
+                                        try:
+                                            import json
+                                            normalized_extra = json.loads(normalized_extra)
+                                        except (json.JSONDecodeError, TypeError):
+                                            normalized_extra = {}
+                                    if not isinstance(normalized_extra, dict):
+                                        normalized_extra = {}
+                                    normalized_extra = dict(normalized_extra)
+
+                                    seasons_need_processing = sorted(list(set(seasons_need_processing)))
+                                    normalized_extra['requested_seasons'] = seasons_need_processing
+                                    normalized_extra['Requested Seasons'] = ",".join(str(s) for s in seasons_need_processing)
+                                    extra_data = normalized_extra
+                                    log_info(
+                                        "TV Processing",
+                                        f"Overrode queued season scope for {movie_title} using live unprocessed seasons: {seasons_need_processing}",
+                                        module="background_tasks",
+                                        function="process_tv_queue"
+                                    )
+                    except Exception as scope_error:
+                        log_warning(
+                            "TV Processing",
+                            f"Could not normalize season scope from live DB state for {movie_title}: {scope_error}",
+                            module="background_tasks",
+                            function="process_tv_queue"
+                        )
                 
                 # Set processing stage when item starts processing
                 if USE_DATABASE:
