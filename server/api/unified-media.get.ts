@@ -323,10 +323,10 @@ export default defineEventHandler(async (event) => {
         COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed_count,
         COUNT(CASE WHEN status = 'completed' AND media_type = 'movie' THEN 1 END) as movies_completed,
         COUNT(CASE WHEN status = 'completed' AND media_type = 'tv' THEN 1 END) as tv_completed,
-        -- Processing items: status = 'processing' in unified_media table
-        COUNT(CASE WHEN status = 'processing' THEN 1 END) as processing_count,
-        COUNT(CASE WHEN status = 'processing' AND media_type = 'movie' THEN 1 END) as movies_processing,
-        COUNT(CASE WHEN status = 'processing' AND media_type = 'tv' THEN 1 END) as tv_processing,
+        -- Processing items: only active processing (exclude passive Trakt wait states)
+        COUNT(CASE WHEN status = 'processing' AND COALESCE(processing_stage, '') NOT IN ('awaiting_trakt_release_metadata', 'trakt_pending') THEN 1 END) as processing_count,
+        COUNT(CASE WHEN status = 'processing' AND media_type = 'movie' AND COALESCE(processing_stage, '') NOT IN ('awaiting_trakt_release_metadata', 'trakt_pending') THEN 1 END) as movies_processing,
+        COUNT(CASE WHEN status = 'processing' AND media_type = 'tv' AND COALESCE(processing_stage, '') NOT IN ('awaiting_trakt_release_metadata', 'trakt_pending') THEN 1 END) as tv_processing,
         -- Failed items: status = 'failed' in unified_media table
         COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
         COUNT(CASE WHEN status = 'failed' AND media_type = 'movie' THEN 1 END) as movies_failed,

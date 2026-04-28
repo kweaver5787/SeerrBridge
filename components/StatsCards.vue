@@ -180,8 +180,8 @@ const stats = computed<StatCard[]>(() => {
     },
     {
       title: 'Currently Processing',
-      value: processing.total_processing || media.processing_count || 0,
-      numericValue: processing.total_processing || media.processing_count || 0,
+      value: processing.total_processing ?? media.processing_count ?? 0,
+      numericValue: processing.total_processing ?? media.processing_count ?? 0,
       change: `${processing.movies_processing || 0} movies, ${processing.tv_processing || 0} TV`,
       changeType: 'positive',
       icon: 'lucide:loader-2',
