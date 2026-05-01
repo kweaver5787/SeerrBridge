@@ -313,6 +313,66 @@ def build_dynamic_torrent_filter(base_filter_regex, media_title):
     return re.sub(r"\s{2,}", " ", updated_filter).strip()
 
 
+def candidate_matches_dynamic_filter(base_filter_regex, media_title, candidate_title):
+    """
+    Local safety gate for DMM results.
+
+    DMM filter UI can occasionally return rows that don't strictly respect the typed
+    filter. This helper re-checks candidate titles against dynamic include lookaheads
+    (e.g. release-group, resolution, quality/source) before accepting a row.
+    """
+    if not base_filter_regex or not candidate_title:
+        return True
+
+    dynamic_filter = build_dynamic_torrent_filter(base_filter_regex, media_title)
+    if not dynamic_filter:
+        return True
+
+    include_groups = re.findall(r"\(\?=\.\*\(\?:((?:\\.|[^)])*)\)\)", dynamic_filter)
+    if not include_groups:
+        return True
+
+    candidate_text = str(candidate_title).lower()
+    for group_index, group in enumerate(include_groups, start=1):
+        tokens = [token.strip() for token in group.split("|") if token.strip()]
+        if not tokens:
+            continue
+
+        # Require at least one token from each include group to match.
+        group_match = False
+        matched_token = None
+        for token in tokens:
+            try:
+                if re.search(token, candidate_text, re.IGNORECASE):
+                    group_match = True
+                    matched_token = token
+                    break
+            except re.error:
+                # Fallback for malformed token patterns: treat as plain text.
+                if token.lower() in candidate_text:
+                    group_match = True
+                    matched_token = token
+                    break
+
+        if not group_match:
+            preview = tokens[:10]
+            more_count = max(0, len(tokens) - len(preview))
+            suffix = f" (+{more_count} more)" if more_count > 0 else ""
+            logger.info(
+                "Dynamic filter gate reject: "
+                f"group {group_index} had no token match for candidate '{candidate_title}'. "
+                f"Checked tokens: {preview}{suffix}"
+            )
+            return False
+        else:
+            logger.debug(
+                "Dynamic filter gate group match: "
+                f"group {group_index} matched token '{matched_token}' for candidate '{candidate_title}'."
+            )
+
+    return True
+
+
 def normalize_title(title, target_lang='en'):
     """
     Normalizes the title by ensuring there are no unnecessary spaces or dots,

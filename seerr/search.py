@@ -11,7 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException, TimeoutException
+from selenium.common.exceptions import StaleElementReferenceException, NoSuchElementException, TimeoutException, InvalidSessionIdException
 from loguru import logger
 from fuzzywuzzy import fuzz
 
@@ -19,6 +19,7 @@ from seerr.config import TORRENT_FILTER_REGEX, USE_DATABASE
 from seerr.database import get_db, LogEntry
 from seerr.db_logger import log_info, log_success, log_error
 from datetime import datetime
+import seerr.browser as browser_module
 from seerr.browser import driver, click_show_more_results, check_red_buttons, prioritize_buttons_in_box
 from seerr.utils import (
     clean_title,
@@ -32,9 +33,24 @@ from seerr.utils import (
     normalize_season,
     match_complete_seasons,
     match_single_season,
-    build_dynamic_torrent_filter
+    build_dynamic_torrent_filter,
+    candidate_matches_dynamic_filter
 )
 from seerr.background_tasks import search_individual_episodes
+
+
+def _driver_get_with_recovery(active_driver, url, context):
+    """Navigate with one-time webdriver session recovery on invalid session."""
+    try:
+        active_driver.get(url)
+        return active_driver
+    except InvalidSessionIdException:
+        logger.warning(f"Invalid webdriver session during {context}. Reinitializing browser and retrying once.")
+        recovered_driver = browser_module.ensure_driver_session(reinitialize=True, force_recreate=True)
+        if recovered_driver is None:
+            raise
+        recovered_driver.get(url)
+        return recovered_driver
 
 def search_dmm_by_title_and_extract_id(driver, title, media_type, year=None, tmdb_id=None):
     """
@@ -2688,16 +2704,13 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
             logger.warning("TMDB ID not found in extra_data. Cannot track processing status.")
             processed_media_id = None
     
-    # Use the imported driver module if the passed driver is None
-    from seerr.browser import driver as browser_driver
+    # Always resolve to a known-good global browser session.
+    driver = browser_module.ensure_driver_session(reinitialize=True)
     if driver is None:
-        if browser_driver is None:
-            logger.error("Selenium WebDriver is not initialized. Cannot proceed.")
-            if USE_DATABASE and processed_media_id:
-                update_media_processing_status(processed_media_id, 'failed', 'browser_automation', error_message='Selenium WebDriver not initialized')
-            return False
-        logger.info("Using the global browser driver instance.")
-        driver = browser_driver
+        logger.error("Selenium WebDriver is not initialized. Cannot proceed.")
+        if USE_DATABASE and processed_media_id:
+            update_media_processing_status(processed_media_id, 'failed', 'browser_automation', error_message='Selenium WebDriver not initialized')
+        return False
         
     # Extract requested seasons from the extra data
     logger.info(f"Debug: extra_data = {extra_data}")
@@ -3056,7 +3069,7 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                             return "cancelled"
                         
                         season_url = f"https://debridmediamanager.com/show/{imdb_id}/{season_num}"
-                        driver.get(season_url)
+                        driver = _driver_get_with_recovery(driver, season_url, f"season navigation ({movie_title} S{season_num})")
                         logger.info(f"Navigated to season {season_num} page: {season_url}")
                         
                         # Check if item is still in queue after navigation
@@ -3255,6 +3268,7 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
             # Initialize a set to track confirmed seasons and processed torrents
             confirmed_seasons = set()
             processed_torrents = set()
+            dynamic_movie_filter = None
 
             # For movies only: set DMM filter to release year ±1 so wrong-year torrents don't appear
             if not is_tv_show:
@@ -3262,7 +3276,8 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                 if year is not None:
                     try:
                         year_regex = f"({year - 1}|{year}|{year + 1})"
-                        base = (build_dynamic_torrent_filter(TORRENT_FILTER_REGEX, movie_title) or "").strip()
+                        dynamic_movie_filter = build_dynamic_torrent_filter(TORRENT_FILTER_REGEX, movie_title)
+                        base = (dynamic_movie_filter or "").strip()
                         full_filter = f"{base} {year_regex}".strip() if base else year_regex
                         filter_input = WebDriverWait(driver, 3).until(
                             EC.presence_of_element_located((By.ID, "query"))
@@ -3914,6 +3929,24 @@ def search_on_debrid(imdb_id, movie_title, media_type, driver, extra_data=None, 
                                 continue
                             except TimeoutException:
                                 logger.info(f"Box {i} does not contain 'With extras'. Proceeding.")
+
+                            # Local safety gate: enforce dynamic filter groups ourselves.
+                            # This protects against DMM occasionally returning rows that
+                            # don't strictly satisfy the typed filter.
+                            if (
+                                not is_tv_show
+                                and dynamic_movie_filter
+                                and not candidate_matches_dynamic_filter(
+                                    dynamic_movie_filter,
+                                    movie_title,
+                                    title_text,
+                                )
+                            ):
+                                logger.warning(
+                                    f"Filter gate rejected box {i}: '{title_text}' does not match required dynamic filter groups."
+                                )
+                                continue
+
                             # Clean both the movie title and the box title for comparison
                             movie_title_cleaned = clean_title(movie_title.split('(')[0].strip(), target_lang='en')
                             title_text_cleaned = clean_title(title_text.split('(')[0].strip(), target_lang='en')

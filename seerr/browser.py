@@ -5,6 +5,8 @@ Handles Selenium browser initialization and interactions with Debrid Media Manag
 import platform
 import time
 import os
+import asyncio
+import threading
 import requests
 import zipfile
 import io
@@ -22,6 +24,8 @@ from selenium.common.exceptions import (
     TimeoutException,
     ElementClickInterceptedException,
     SessionNotCreatedException,
+    InvalidSessionIdException,
+    WebDriverException,
 )
 from fuzzywuzzy import fuzz
 from seerr.config import (
@@ -37,6 +41,7 @@ from seerr.config import (
 )
 # Global driver variable to hold the Selenium WebDriver
 driver = None
+_driver_lock = threading.RLock()
 # Global library stats
 library_stats = {
     "torrents_count": 0,
@@ -48,6 +53,83 @@ library_stats = {
 if USE_DATABASE:
     from seerr.database import get_db, LibraryStats
     from seerr.db_logger import log_info, log_success, log_warning, log_error
+
+
+def _is_driver_session_alive(candidate_driver):
+    """Return True when the webdriver session is valid and usable."""
+    if candidate_driver is None:
+        return False
+    try:
+        session_id = getattr(candidate_driver, "session_id", None)
+        if not session_id:
+            return False
+        # Accessing current_url is a lightweight way to validate the session.
+        _ = candidate_driver.current_url
+        return True
+    except (InvalidSessionIdException, WebDriverException):
+        return False
+    except Exception:
+        return False
+
+
+def initialize_browser_sync():
+    """Run async browser initialization from sync code paths."""
+    try:
+        return asyncio.run(initialize_browser())
+    except RuntimeError as e:
+        # FastAPI / schedulers may already have an event loop in this thread.
+        if "asyncio.run() cannot be called from a running event loop" not in str(e):
+            raise
+
+        result = {"driver": None, "error": None}
+
+        def _runner():
+            try:
+                result["driver"] = asyncio.run(initialize_browser())
+            except Exception as thread_error:
+                result["error"] = thread_error
+
+        thread = threading.Thread(target=_runner, name="browser-init-thread", daemon=True)
+        thread.start()
+        thread.join()
+
+        if result["error"] is not None:
+            raise result["error"]
+        return result["driver"]
+
+
+def ensure_driver_session(reinitialize=True, force_recreate=False):
+    """
+    Return a valid webdriver session, recreating it when needed.
+    """
+    global driver
+
+    with _driver_lock:
+        if not force_recreate and _is_driver_session_alive(driver):
+            return driver
+
+        if driver is not None:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+            finally:
+                driver = None
+
+    if not reinitialize:
+        return None
+
+    try:
+        new_driver = initialize_browser_sync()
+    except Exception as e:
+        logger.error(f"Failed to reinitialize Selenium WebDriver: {e}")
+        return None
+
+    if _is_driver_session_alive(new_driver):
+        return new_driver
+    return None
+
+
 def get_latest_chrome_driver():
     """
     Fetch the latest stable Chrome driver from Google's Chrome for Testing.
@@ -120,7 +202,11 @@ def get_latest_chrome_driver():
 async def initialize_browser():
     """Initialize the Selenium WebDriver and set up the browser."""
     global driver
-    if driver is None:
+    with _driver_lock:
+        if _is_driver_session_alive(driver):
+            logger.info("Browser already initialized.")
+            return driver
+
         logger.info("Starting persistent browser session.")
         # Detect the current operating system
         current_os = platform.system().lower() # Returns 'windows', 'linux', or 'darwin' (macOS)
@@ -404,17 +490,19 @@ async def initialize_browser():
                 if driver:
                     driver.quit()
                     driver = None
-    else:
-        logger.info("Browser already initialized.")
- 
-    return driver # Return the driver instance for direct use
+        return driver # Return the driver instance for direct use
+
+
 async def shutdown_browser():
     """Shut down the browser and clean up resources."""
     global driver
-    if driver:
-        driver.quit()
-        logger.warning("Selenium WebDriver closed.")
-        driver = None
+    with _driver_lock:
+        if driver:
+            try:
+                driver.quit()
+            finally:
+                logger.warning("Selenium WebDriver closed.")
+                driver = None
 
 def login(driver):
     """Handle login to Debrid Media Manager."""
@@ -996,7 +1084,8 @@ def refresh_library_stats():
     """
     global driver, library_stats
     
-    if driver is None:
+    active_driver = ensure_driver_session(reinitialize=False)
+    if active_driver is None:
         logger.warning("Browser not initialized. Cannot refresh library stats.")
         return False
     
@@ -1012,14 +1101,14 @@ def refresh_library_stats():
     
     try:
         # Navigate to library page if we're not already there
-        current_url = driver.current_url
+        current_url = active_driver.current_url
         if "library" not in current_url:
             logger.info("Navigating to library page to refresh stats.")
-            driver.get("https://debridmediamanager.com/library")
+            active_driver.get("https://debridmediamanager.com/library")
             time.sleep(7)  # Wait for page to load
         
         logger.info("Refreshing library statistics.")
-        library_stats_element = WebDriverWait(driver, 10).until(
+        library_stats_element = WebDriverWait(active_driver, 10).until(
             EC.presence_of_element_located((By.XPATH, "//h1[contains(@class, 'text-xl') and contains(@class, 'font-bold') and contains(@class, 'text-white') and contains(text(), 'Library')]"))
         )
         library_stats_text = library_stats_element.text.strip()
@@ -1066,6 +1155,38 @@ def refresh_library_stats():
         logger.info(f"Successfully refreshed library stats: {torrents_count} torrents, {total_size_tb} TB")
         return True
         
+    except InvalidSessionIdException:
+        logger.warning("Library stats refresh hit invalid webdriver session. Reinitializing and retrying once.")
+        recovered_driver = ensure_driver_session(reinitialize=True, force_recreate=True)
+        if recovered_driver is None:
+            logger.error("Could not recover webdriver session for library stats refresh.")
+            return False
+        try:
+            recovered_driver.get("https://debridmediamanager.com/library")
+            time.sleep(7)
+            library_stats_element = WebDriverWait(recovered_driver, 10).until(
+                EC.presence_of_element_located((By.XPATH, "//h1[contains(@class, 'text-xl') and contains(@class, 'font-bold') and contains(@class, 'text-white') and contains(text(), 'Library')]"))
+            )
+            library_stats_text = library_stats_element.text.strip()
+            logger.info(f"Recovered library stats text: {library_stats_text}")
+            import re
+            from datetime import datetime
+
+            torrent_match = re.search(r'(\d+)\s+torrents', library_stats_text)
+            torrents_count = int(torrent_match.group(1)) if torrent_match else 0
+            size_match = re.search(r'([\d.]+)\s*TB', library_stats_text)
+            total_size_tb = float(size_match.group(1)) if size_match else 0.0
+
+            library_stats = {
+                "torrents_count": torrents_count,
+                "total_size_tb": total_size_tb,
+                "last_updated": datetime.now().isoformat()
+            }
+            logger.info(f"Recovered and refreshed library stats: {torrents_count} torrents, {total_size_tb} TB")
+            return True
+        except Exception as e:
+            logger.error(f"Library stats retry failed after driver recovery: {e}")
+            return False
     except TimeoutException:
         logger.warning("Could not find library stats element on the page within timeout.")
         return False
