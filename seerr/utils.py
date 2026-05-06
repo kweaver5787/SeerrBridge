@@ -452,6 +452,68 @@ def extract_year(text, expected_year=None, ignore_resolution=False):
 
     return None  # Return None if no valid year is found
 
+
+def _normalize_roman_numerals_in_title_tokens(text):
+    """Normalize common standalone Roman numerals used in sequel numbering."""
+    roman_to_number = {
+        "x": "10",
+        "ix": "9",
+        "viii": "8",
+        "vii": "7",
+        "vi": "6",
+        "v": "5",
+        "iv": "4",
+        "iii": "3",
+        "ii": "2",
+        "i": "1",
+    }
+    # Match longer numerals first so "viii" doesn't partially match "v"
+    ordered_roman_tokens = sorted(roman_to_number.keys(), key=len, reverse=True)
+    for roman_token in ordered_roman_tokens:
+        text = re.sub(
+            rf"\b{roman_token}\b",
+            roman_to_number[roman_token],
+            text,
+            flags=re.IGNORECASE,
+        )
+    return text
+
+
+def _canonicalize_title_for_word_match(title):
+    """
+    Canonicalize title text for safe complete-word matching:
+    - normalize punctuation/separators
+    - normalize conjunction variants (&, + -> and)
+    - remove common release/edition tags
+    - normalize sequel numerals (Roman <-> Arabic)
+    """
+    if not title:
+        return ""
+
+    # Normalize smart punctuation and separators early
+    canonical = title.replace("—", "-").replace("–", "-")
+    canonical = canonical.replace("’", "'").replace("‘", "'").replace("`", "'")
+    canonical = canonical.replace("_", " ")
+
+    # Treat conjunction variants as equivalent
+    canonical = canonical.replace("&", " and ").replace("+", " and ")
+
+    # Remove safe release-edition markers for title-only comparison
+    canonical = re.sub(
+        r"\b(?:unrated|extended|remastered|proper|repack|directors?\s+cut)\b",
+        " ",
+        canonical,
+        flags=re.IGNORECASE,
+    )
+
+    # Normalize punctuation to spaces and collapse runs
+    canonical = re.sub(r"[.:,\-;/\(\)\[\]\{\}]+", " ", canonical)
+    canonical = re.sub(r"\s+", " ", canonical).strip().lower()
+
+    # Normalize sequel numerals after tokenization cleanup
+    canonical = _normalize_roman_numerals_in_title_tokens(canonical)
+    return canonical
+
 def is_complete_word_match(movie_title, torrent_title):
     """
     Validates that the movie title appears as a complete word/phrase in the torrent title.
@@ -465,22 +527,17 @@ def is_complete_word_match(movie_title, torrent_title):
     Returns:
         True if movie title appears as a complete word/phrase, False otherwise
     """
-    # Normalize special characters (em dashes, underscores) before comparison
-    # This ensures "animal.adventure" matches "_animal.adventure_" or "–animal.adventure"
-    movie_title = movie_title.replace('—', '-').replace('–', '-').replace('_', ' ')
-    torrent_title = torrent_title.replace('—', '-').replace('–', '-').replace('_', ' ')
-    
-    # Convert to lowercase for comparison
-    movie_title = movie_title.lower().strip()
-    torrent_title = torrent_title.lower().strip()
+    # Canonicalize equivalent variants before strict token/phrase checks.
+    movie_title = _canonicalize_title_for_word_match(movie_title)
+    torrent_title = _canonicalize_title_for_word_match(torrent_title)
     
     # If titles are identical, it's a match
     if movie_title == torrent_title:
         return True
     
-    # Split both titles into words (using dots, spaces, etc. as separators)
-    movie_words = re.split(r'[.\s]+', movie_title)
-    torrent_words = re.split(r'[.\s]+', torrent_title)
+    # Split both titles into words (canonicalized separators are spaces)
+    movie_words = re.split(r'\s+', movie_title)
+    torrent_words = re.split(r'\s+', torrent_title)
     
     # Remove empty strings
     movie_words = [w for w in movie_words if w]
