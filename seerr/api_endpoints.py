@@ -183,7 +183,7 @@ async def check_failed_items_availability_manual():
     """Manually trigger availability check for failed items"""
     try:
         from seerr.background_tasks import check_failed_items_availability
-        await check_failed_items_availability()
+        await check_failed_items_availability(force=True)
         return {
             "success": True,
             "message": "Availability check completed"
@@ -1145,6 +1145,62 @@ async def mark_media_complete_endpoint(media_id: int, request: Request):
     except Exception as e:
         log_error("API Error", f"Error marking media {media_id} as complete: {e}", 
                  module="api_endpoints", function="mark_media_complete_endpoint")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/processed-items-history")
+async def get_processed_items_history(page: int = 1, limit: int = 100):
+    """
+    Return first-time processed item history (movie or TV episode), newest first.
+    """
+    try:
+        from seerr.database import ProcessedItemHistory, get_db
+
+        safe_page = max(1, int(page or 1))
+        safe_limit = max(1, min(int(limit or 100), 200))
+        offset = (safe_page - 1) * safe_limit
+
+        db = get_db()
+        try:
+            total = db.query(ProcessedItemHistory).count()
+            rows = db.query(ProcessedItemHistory).order_by(
+                ProcessedItemHistory.completed_at.desc(),
+                ProcessedItemHistory.id.desc()
+            ).offset(offset).limit(safe_limit).all()
+
+            return {
+                "success": True,
+                "data": {
+                    "items": [
+                        {
+                            "id": row.id,
+                            "item_key": row.item_key,
+                            "media_type": row.media_type,
+                            "display_name": row.display_name,
+                            "title": row.title,
+                            "season_number": row.season_number,
+                            "episode_id": row.episode_id,
+                            "completion_source": row.completion_source,
+                            "completed_at": row.completed_at.isoformat() if row.completed_at else None,
+                            "unified_media_id": row.unified_media_id,
+                        }
+                        for row in rows
+                    ],
+                    "pagination": {
+                        "page": safe_page,
+                        "limit": safe_limit,
+                        "total": total,
+                        "total_pages": (total + safe_limit - 1) // safe_limit if safe_limit else 0,
+                        "has_next": (offset + safe_limit) < total,
+                        "has_prev": safe_page > 1,
+                    },
+                }
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        log_error("API Error", f"Error fetching processed item history: {e}",
+                 module="api_endpoints", function="get_processed_items_history")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/processing/current")

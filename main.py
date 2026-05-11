@@ -1024,8 +1024,7 @@ async def reload_environment():
         "changes": list(changes.keys())
     }
 
-@app.post("/recheck-media/{media_id}")
-async def recheck_media(media_id: int, request: Request):
+async def _recheck_media_internal(media_id: int, body: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Status-aware recheck: refresh metadata, then depending on status:
     - Unreleased: if release date has passed, set to pending and add to queue.
@@ -1037,12 +1036,7 @@ async def recheck_media(media_id: int, request: Request):
     from seerr.unified_media_manager import get_media_by_id, refresh_media_from_trakt, update_media_processing_status, update_media_details, tv_recheck_scoped
     from seerr.config import USE_DATABASE
 
-    body = {}
-    try:
-        if request.headers.get("content-type", "").startswith("application/json"):
-            body = await request.json() or {}
-    except Exception:
-        pass
+    body = body or {}
 
     if not USE_DATABASE:
         raise HTTPException(status_code=500, detail="Database not enabled")
@@ -1114,6 +1108,73 @@ async def recheck_media(media_id: int, request: Request):
         "message": "Recheck completed; item added to queue",
         "media": {"id": media_record.id, "title": media_record.title, "media_type": media_record.media_type}
     }
+
+
+@app.post("/recheck-media/{media_id}")
+async def recheck_media(media_id: int, request: Request):
+    body: Dict[str, Any] = {}
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            body = await request.json() or {}
+    except Exception:
+        body = {}
+    return await _recheck_media_internal(media_id, body)
+
+
+@app.post("/recheck-media-bulk")
+async def recheck_media_bulk(request: Request):
+    """
+    Recheck multiple media items one-by-one using the exact same logic as single-item recheck.
+    Accepts: {"media_ids": [1, 2, ...]}
+    """
+    try:
+        body = await request.json()
+        media_ids = body.get("media_ids", [])
+        if not media_ids or not isinstance(media_ids, list):
+            raise HTTPException(status_code=400, detail="media_ids array is required")
+        if len(media_ids) == 0:
+            raise HTTPException(status_code=400, detail="At least one media ID is required")
+
+        logger.info(f"Bulk rechecking media for {len(media_ids)} items")
+        results = {
+            "success": [],
+            "failed": [],
+            "total": len(media_ids),
+            "success_count": 0,
+            "failed_count": 0,
+        }
+
+        for media_id in media_ids:
+            try:
+                result = await _recheck_media_internal(int(media_id), {})
+                media_obj = result.get("media") or {}
+                results["success"].append({
+                    "id": media_obj.get("id", int(media_id)),
+                    "title": media_obj.get("title", f"Media {media_id}"),
+                    "message": result.get("message", "Queued for recheck"),
+                })
+                results["success_count"] += 1
+            except HTTPException as exc:
+                error_msg = str(exc.detail) if getattr(exc, "detail", None) else "Recheck failed"
+                logger.error(f"Error rechecking media ID {media_id}: {error_msg}")
+                results["failed"].append({"id": int(media_id), "error": error_msg})
+                results["failed_count"] += 1
+            except Exception as exc:
+                error_msg = str(exc)
+                logger.error(f"Error rechecking media ID {media_id}: {error_msg}")
+                results["failed"].append({"id": int(media_id), "error": error_msg})
+                results["failed_count"] += 1
+
+        return {
+            "status": "completed" if results["failed_count"] == 0 else "partial",
+            "results": results,
+            "message": f"Processed {results['total']} items: {results['success_count']} succeeded, {results['failed_count']} failed",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in bulk recheck: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/retrigger-media/{media_id}")

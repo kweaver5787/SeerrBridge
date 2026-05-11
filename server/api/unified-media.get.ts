@@ -22,6 +22,7 @@ export default defineEventHandler(async (event) => {
     const sortBy = query.sortBy as string || 'updated_at'
     const sortOrder = query.sortOrder as string || 'DESC'
     const subscribed = query.subscribed as string
+    const laggingTvOnly = query.laggingTvOnly as string
     
     // Build WHERE clause
     const whereConditions = []
@@ -44,6 +45,11 @@ export default defineEventHandler(async (event) => {
     
     if (subscribed === 'true') {
       whereConditions.push('is_subscribed = TRUE')
+    }
+
+    if (laggingTvOnly === 'true') {
+      whereConditions.push("media_type = 'tv'")
+      whereConditions.push("JSON_SEARCH(seasons_data, 'one', 'E%', NULL, '$[*].unprocessed_episodes[*]') IS NOT NULL")
     }
     
     const whereClause = whereConditions.length > 0 
@@ -196,7 +202,7 @@ export default defineEventHandler(async (event) => {
       } else {
         mediaItem.display_status = mediaItem.status
       }
-      
+
       // Add progress percentage for TV shows
       if (mediaItem.media_type === 'tv') {
         let confirmedCount = 0
@@ -277,6 +283,14 @@ export default defineEventHandler(async (event) => {
         mediaItem.extra_data = {}
         mediaItem.tags = []
       }
+
+      // Lagging TV: at least one aired/unprocessed episode exists
+      const seasonsForLagCheck = Array.isArray(mediaItem.seasons_data) ? mediaItem.seasons_data : []
+      mediaItem.has_aired_unprocessed = mediaItem.media_type === 'tv' && seasonsForLagCheck.some((season: any) => {
+        if (!season || typeof season !== 'object') return false
+        const unprocessed = season.unprocessed_episodes || []
+        return Array.isArray(unprocessed) && unprocessed.length > 0
+      })
       
       // Create seasons array for TV shows using new multi-season structure
       if (mediaItem.media_type === 'tv') {

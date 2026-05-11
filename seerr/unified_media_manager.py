@@ -1017,6 +1017,20 @@ def update_media_processing_status(media_id: int, status: str, processing_stage:
             media.processing_completed_at = datetime.utcnow()
             # Note: is_in_queue flag is managed by queue processing logic, not here
             # Queue processing will clear the flag when item is removed from queue
+            if media.media_type == 'movie':
+                try:
+                    from seerr.completion_history_manager import record_processed_movie
+
+                    completion_source = 'manual' if processing_stage == 'manually_marked_complete' else 'automation'
+                    record_processed_movie(
+                        media,
+                        source=completion_source,
+                        completed_at=media.processing_completed_at,
+                        db=db,
+                    )
+                except Exception as hist_err:
+                    log_warning("Completion History", f"Could not record movie completion history for {media.title}: {hist_err}",
+                               module="unified_media_manager", function="update_media_processing_status")
         elif status == 'processing':
             media.processing_started_at = datetime.utcnow()
         elif status == 'failed':
@@ -1282,6 +1296,7 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
             
             marked_episodes = []
             updated_seasons = []
+            newly_confirmed_pairs: List[Tuple[int, str]] = []
             
             # Process each season
             for season_data in seasons_data:
@@ -1317,11 +1332,14 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
                     episodes_to_mark = {f"E{str(i).zfill(2)}" for i in range(1, aired_episodes + 1)} if aired_episodes > 0 else set()
                 
                 # Update episode lists
+                newly_confirmed = episodes_to_mark - confirmed_episodes
                 for ep_id in episodes_to_mark:
                     confirmed_episodes.add(ep_id)
                     failed_episodes.discard(ep_id)
                     unprocessed_episodes.discard(ep_id)
                     marked_episodes.append(f"Season {season_num} {ep_id}")
+                for ep_id in newly_confirmed:
+                    newly_confirmed_pairs.append((int(season_num), ep_id))
                 
                 # Update season data
                 season_data['confirmed_episodes'] = sorted(list(confirmed_episodes))
@@ -1344,6 +1362,22 @@ def mark_episodes_complete(media_id: int, season_number: int = None, episode_num
             media.last_checked_at = datetime.utcnow()
             media.updated_at = datetime.utcnow()
             db.commit()
+
+            try:
+                from seerr.completion_history_manager import record_processed_tv_episode
+
+                for season_num, episode_id in newly_confirmed_pairs:
+                    record_processed_tv_episode(
+                        media,
+                        season_number=season_num,
+                        episode_id=episode_id,
+                        source='manual',
+                        completed_at=datetime.utcnow(),
+                        db=db,
+                    )
+            except Exception as hist_err:
+                log_warning("Completion History", f"Could not record TV episode completion history for {media.title}: {hist_err}",
+                           module="unified_media_manager", function="mark_episodes_complete")
 
             # DEBUG: log what we just committed (in-memory state)
             for s in updated_seasons:

@@ -47,6 +47,15 @@
           <AppIcon v-if="loading" icon="lucide:loader-2" size="16" class="sm:w-[18px] sm:h-[18px] animate-spin" />
           <AppIcon v-else icon="lucide:refresh-cw" size="16" class="sm:w-[18px] sm:h-[18px]" />
         </Button>
+        <Button
+          @click="openProcessedItemsHistory"
+          variant="outline"
+          size="sm"
+          class="gap-1.5 sm:gap-2"
+        >
+          <AppIcon icon="lucide:list-checks" size="16" class="sm:w-[18px] sm:h-[18px]" />
+          <span class="hidden sm:inline">Processed Items</span>
+        </Button>
       </div>
     </div>
     
@@ -282,6 +291,17 @@
             </Button>
           </div>
         </div>
+        <div class="mt-3 flex items-center gap-2">
+          <input
+            id="laggingTvOnly"
+            v-model="filters.laggingTvOnly"
+            type="checkbox"
+            class="w-4 h-4 rounded border-border text-primary focus:ring-primary"
+          />
+          <label for="laggingTvOnly" class="text-sm text-foreground cursor-pointer">
+            Lagging TV only (aired episodes still unprocessed)
+          </label>
+        </div>
       </div>
     </Transition>
 
@@ -346,8 +366,29 @@
               </span>
             </Button>
             <Button
+              @click.stop="bulkRecheckMedia"
+              :disabled="bulkRechecking || bulkRetriggering || bulkIgnoring || bulkDeleting"
+              variant="outline"
+              size="sm"
+              class="gap-1.5"
+            >
+              <AppIcon
+                v-if="bulkRechecking"
+                icon="lucide:loader-2"
+                size="16"
+                class="animate-spin"
+              />
+              <AppIcon v-else icon="lucide:rotate-cw" size="16" />
+              <span class="hidden sm:inline">
+                {{ bulkRechecking ? 'Rechecking...' : 'Recheck Selected' }}
+              </span>
+              <span class="sm:hidden">
+                {{ bulkRechecking ? '...' : 'Recheck' }}
+              </span>
+            </Button>
+            <Button
               @click.stop="bulkRetriggerMedia"
-              :disabled="bulkRetriggering || bulkIgnoring || bulkDeleting"
+              :disabled="bulkRetriggering || bulkRechecking || bulkIgnoring || bulkDeleting"
               size="sm"
               class="gap-1.5 bg-primary hover:bg-primary/90"
             >
@@ -470,6 +511,12 @@
                 alt="Status" 
                 class="w-6 h-6 sm:w-8 sm:h-8 drop-shadow-lg"
               />
+            </div>
+
+            <div v-if="media.media_type === 'tv' && media.has_aired_unprocessed" title="Aired episodes pending processing">
+              <span class="inline-flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-amber-500/90 text-white border border-amber-300/70 shadow-lg text-base font-bold">
+                *
+              </span>
             </div>
             
             <!-- Enhanced Media Type Badge -->
@@ -1800,6 +1847,42 @@
       </div>
     </div>
   </Transition>
+
+  <!-- Processed Items History Dialog -->
+  <Transition
+    enter-active-class="transition-all duration-300 ease-out"
+    enter-from-class="opacity-0 scale-95"
+    enter-to-class="opacity-100 scale-100"
+    leave-active-class="transition-all duration-200 ease-in"
+    leave-from-class="opacity-100 scale-100"
+    leave-to-class="opacity-0 scale-95"
+  >
+    <div v-if="showProcessedItemsHistory" class="fixed inset-0 z-[120] flex items-center justify-center p-4">
+      <div class="absolute inset-0 bg-black/70 backdrop-blur-sm" @click="showProcessedItemsHistory = false"></div>
+      <div class="relative w-full max-w-2xl bg-card border border-border rounded-2xl shadow-2xl max-h-[80vh] flex flex-col">
+        <div class="px-5 py-4 border-b border-border flex items-center justify-between">
+          <div>
+            <h3 class="text-lg font-semibold text-foreground">Processed Items</h3>
+            <p class="text-xs text-muted-foreground">First-time processed entries, newest first</p>
+          </div>
+          <Button variant="ghost" size="sm" @click="showProcessedItemsHistory = false">
+            <AppIcon icon="lucide:x" size="16" />
+          </Button>
+        </div>
+        <div class="p-4 overflow-y-auto space-y-2">
+          <div v-if="loadingProcessedItemsHistory" class="text-sm text-muted-foreground">Loading...</div>
+          <div v-else-if="processedItemsHistory.length === 0" class="text-sm text-muted-foreground">No processed items recorded yet.</div>
+          <div
+            v-for="entry in processedItemsHistory"
+            :key="entry.item_key"
+            class="text-sm text-foreground border border-border rounded-lg px-3 py-2 bg-background"
+          >
+            {{ entry.display_name }}
+          </div>
+        </div>
+      </div>
+    </div>
+  </Transition>
 </template>
 
 <script setup lang="ts">
@@ -1888,6 +1971,20 @@ interface ProcessedMedia {
   rating?: string
   vote_count?: number
   popularity?: string
+  has_aired_unprocessed?: boolean
+}
+
+interface ProcessedItemHistoryEntry {
+  id: number
+  item_key: string
+  media_type: string
+  display_name: string
+  title: string
+  season_number?: number
+  episode_id?: string
+  completion_source: string
+  completed_at?: string
+  unified_media_id: number
 }
 
 interface Stats {
@@ -1951,6 +2048,7 @@ const searchQuery = ref('')
 const filters = ref({
   status: '',
   mediaType: '',
+  laggingTvOnly: false,
   sortBy: 'updated_at',
   sortOrder: 'DESC'
 })
@@ -1969,6 +2067,7 @@ const actionMenuPosition = ref({ top: 0, right: 0 })
 // Bulk selection state
 const selectedMediaIds = ref<Set<number>>(new Set())
 const bulkRetriggering = ref(false)
+const bulkRechecking = ref(false)
 const rechecking = ref(false)
 const reRunning = ref(false)
 const bulkDeleting = ref(false)
@@ -1980,6 +2079,9 @@ const reRunningScoped = ref(false)
 const showBulkDeleteConfirmation = ref(false)
 const showBulkIgnoreConfirmation = ref(false)
 const showMarkCompleteModal = ref(false)
+const showProcessedItemsHistory = ref(false)
+const loadingProcessedItemsHistory = ref(false)
+const processedItemsHistory = ref<ProcessedItemHistoryEntry[]>([])
 const selectedSeasons = ref<Set<number>>(new Set())
 const selectedEpisodes = ref<Map<number, Set<number>>>(new Map()) // Map<seasonNumber, Set<episodeNumber>>
 
@@ -2028,6 +2130,7 @@ const activeFiltersCount = computed(() => {
   let count = 0
   if (filters.value.status) count++
   if (filters.value.mediaType) count++
+  if (filters.value.laggingTvOnly) count++
   if (searchQuery.value) count++
   return count
 })
@@ -2220,6 +2323,7 @@ const loadMedia = async (page = 1, append = false) => {
     
     if (filters.value.status) params.append('status', filters.value.status)
     if (filters.value.mediaType) params.append('mediaType', filters.value.mediaType)
+    if (filters.value.laggingTvOnly) params.append('laggingTvOnly', 'true')
     if (searchQuery.value) params.append('search', searchQuery.value)
     
     const response = await $fetch(`/api/unified-media?${params.toString()}`)
@@ -2271,6 +2375,7 @@ const clearFilters = () => {
   filters.value = {
     status: '',
     mediaType: '',
+    laggingTvOnly: false,
     sortBy: 'updated_at',
     sortOrder: 'DESC'
   }
@@ -2314,6 +2419,7 @@ const applyStatFilter = (status: string, mediaType: string) => {
   if (filters.value.status === '' && filters.value.mediaType === '') {
     filters.value.sortBy = 'updated_at'
     filters.value.sortOrder = 'DESC'
+    filters.value.laggingTvOnly = false
     searchQuery.value = ''
   }
   
@@ -3021,6 +3127,78 @@ const bulkRetriggerMedia = async () => {
   }
 }
 
+const bulkRecheckMedia = async () => {
+  if (selectedMediaIds.value.size === 0) return
+
+  const selectedItems = mediaItems.value.filter(item => selectedMediaIds.value.has(item.id))
+  const ignorableItems = selectedItems.filter(item => (item.display_status || item.status) === 'ignored')
+  const eligibleItems = selectedItems.filter(item => (item.display_status || item.status) !== 'ignored')
+
+  if (ignorableItems.length > 0) {
+    const confirmedIgnored = confirm(
+      `Warning: ${ignorableItems.length} selected item(s) are ignored and will be skipped.\n\n` +
+      `Continue with rechecking ${eligibleItems.length} item(s)?`
+    )
+    if (!confirmedIgnored) return
+  }
+
+  const confirmed = confirm(
+    `Recheck ${eligibleItems.length} selected item(s)?\n\n` +
+    `This runs the same per-item action as clicking Recheck individually and queues them one-by-one.`
+  )
+  if (!confirmed) return
+
+  bulkRechecking.value = true
+  try {
+    const mediaIdsArray = eligibleItems.map(item => item.id)
+    if (mediaIdsArray.length === 0) {
+      alert('No eligible items to recheck.')
+      return
+    }
+    const response: any = await $fetch('/api/recheck-media-bulk', {
+      method: 'POST',
+      body: { media_ids: mediaIdsArray }
+    })
+
+    if (response?.results) {
+      const { success_count, failed_count } = response.results
+      if (failed_count > 0) {
+        alert(`Bulk recheck completed with errors.\n\n✓ ${success_count} succeeded\n✗ ${failed_count} failed`)
+      } else {
+        alert(`Successfully queued ${success_count} item(s) for recheck.`)
+      }
+    }
+
+    clearSelection()
+    await refreshData()
+  } catch (error: any) {
+    console.error('Error bulk rechecking media:', error)
+    alert(error?.data?.statusMessage || error?.message || 'Bulk recheck failed')
+  } finally {
+    bulkRechecking.value = false
+  }
+}
+
+const loadProcessedItemsHistory = async () => {
+  loadingProcessedItemsHistory.value = true
+  try {
+    const response: any = await $fetch('/api/processed-items-history?page=1&limit=300')
+    if (response?.success) {
+      processedItemsHistory.value = response.data?.items || []
+    }
+  } catch (error) {
+    console.error('Error loading processed items history:', error)
+    processedItemsHistory.value = []
+  } finally {
+    loadingProcessedItemsHistory.value = false
+  }
+}
+
+const openProcessedItemsHistory = async () => {
+  showProcessedItemsHistory.value = true
+  await loadProcessedItemsHistory()
+}
+
 // Bulk delete function
 const bulkDeleteMedia = async () => {
   if (selectedMediaIds.value.size === 0) return
@@ -3317,6 +3495,9 @@ onMounted(async () => {
   // Apply mediaType filter from query parameter
   if (query.mediaType && typeof query.mediaType === 'string') {
     filters.value.mediaType = query.mediaType
+  }
+  if (query.laggingTvOnly && typeof query.laggingTvOnly === 'string') {
+    filters.value.laggingTvOnly = query.laggingTvOnly === 'true'
   }
   
   // Load media with applied filters

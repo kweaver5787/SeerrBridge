@@ -1932,6 +1932,11 @@ def mark_all_episodes_as_confirmed(movie_title, season_num):
             if success:
                 from seerr.unified_media_manager import recompute_tv_show_status
                 recompute_tv_show_status(media_record.id)
+                try:
+                    from seerr.completion_history_manager import sync_tv_history_from_seasons_data
+                    sync_tv_history_from_seasons_data(media_record, source='automation')
+                except Exception as hist_err:
+                    logger.warning(f"Could not sync completion history for {media_record.title}: {hist_err}")
                 logger.success(f"Successfully updated database - Season {season_num} marked as complete with all episodes confirmed")
             else:
                 logger.error(f"Failed to update database for Season {season_num}")
@@ -2018,6 +2023,11 @@ def mark_season_as_complete(movie_title, season_num):
                     db.commit()
                     from seerr.unified_media_manager import recompute_tv_show_status
                     recompute_tv_show_status(media_record.id)
+                    try:
+                        from seerr.completion_history_manager import sync_tv_history_from_seasons_data
+                        sync_tv_history_from_seasons_data(media_record, source='automation')
+                    except Exception as hist_err:
+                        logger.warning(f"Could not sync completion history for {media_record.title}: {hist_err}")
                     logger.success(f"Updated database - Season {season_num} marked as complete; show status recomputed")
                 else:
                     logger.warning(f"No season data found for Season {season_num} in {len(seasons_data)} seasons")

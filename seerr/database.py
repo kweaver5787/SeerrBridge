@@ -203,6 +203,28 @@ class ServiceStatus(Base):
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, index=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+
+class ProcessedItemHistory(Base):
+    """First-time processed item history (movies and individual TV episodes)."""
+    __tablename__ = "processed_item_history"
+
+    id = Column(Integer, primary_key=True)
+    item_key = Column(String(255), nullable=False, unique=True, index=True)
+    unified_media_id = Column(Integer, nullable=False, index=True)
+    media_type = Column(String(20), nullable=False, index=True)  # movie | tv
+    title = Column(String(500), nullable=False)
+    season_number = Column(Integer, nullable=True)
+    episode_id = Column(String(16), nullable=True)  # E01
+    display_name = Column(String(600), nullable=False)  # "Title" or "Title S01E01"
+    completion_source = Column(String(50), nullable=False, default="automation")
+    completed_at = Column(DateTime, nullable=False, default=datetime.utcnow, index=True)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    __table_args__ = (
+        Index('idx_processed_item_history_completed', 'completed_at'),
+        Index('idx_processed_item_history_media', 'media_type', 'unified_media_id'),
+    )
+
 class TraktList(Base):
     """Trakt list configuration table"""
     __tablename__ = "trakt_lists"
@@ -344,6 +366,10 @@ def init_database():
         # Add any missing columns so existing DBs match current models after app updates
         from seerr.schema_sync import sync_schema
         sync_schema(engine, extra_metadata=[Base.metadata])
+
+        # Idempotent backfill for first-time processed item history.
+        from seerr.completion_history_manager import backfill_processed_history
+        backfill_processed_history()
 
         # Insert default notification settings if none exist
         existing_settings = db.query(NotificationSettings).first()

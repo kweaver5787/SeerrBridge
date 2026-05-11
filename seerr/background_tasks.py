@@ -135,6 +135,27 @@ queue_processing_complete = asyncio.Event()
 # Flag to track if library refresh has been done for current empty queue cycle
 library_refreshed_for_current_cycle = False
 
+# After startup or 3am maintenance, timer-driven availability checks are skipped until
+# both queues are idle (see refresh_post_maintenance_availability_gate).
+_post_maintenance_availability_deferred = False
+
+
+def refresh_post_maintenance_availability_gate() -> None:
+    """
+    Set _post_maintenance_availability_deferred True while movie or TV work remains after
+    a startup/3am maintenance run, so check_failed_items_availability does not run until
+    the queue processor has drained that wave (avoids recompute_tv_show_status -> failed
+    while episodes are still pending browser processing).
+    """
+    global _post_maintenance_availability_deferred
+    if not USE_DATABASE:
+        _post_maintenance_availability_deferred = False
+        return
+    if movie_queue.empty() and tv_queue.empty() and not is_processing_queue:
+        _post_maintenance_availability_deferred = False
+    else:
+        _post_maintenance_availability_deferred = True
+
 # Configuration refresh tracking
 last_config_refresh_time = 0
 config_refresh_interval = 60  # Check for config changes every 60 seconds
@@ -334,6 +355,7 @@ async def initialize_background_tasks():
 
         # Same pipeline as 3am, plus Overseerr sync once (next unified pass without Overseerr is 3am)
         await run_processing_event_maintenance(sync_overseerr=True)
+        refresh_post_maintenance_availability_gate()
 
         # Mark failed items complete in Overseerr when already available (no cap on error_count)
         from seerr.failed_item_manager import process_failed_items
@@ -550,6 +572,7 @@ async def daily_3am_maintenance():
     task_config.set_config('processing_event_active', True, config_type='bool')
     try:
         await run_processing_event_maintenance(sync_overseerr=False)
+        refresh_post_maintenance_availability_gate()
     finally:
         task_config.set_config('processing_event_active', False, config_type='bool')
 
@@ -1047,6 +1070,7 @@ async def process_queues():
                 # Set processing flag to false when no items to process
                 is_processing_queue = False
                 queue_processing_complete.set()
+                refresh_post_maintenance_availability_gate()
                 
                 # Run library refresh immediately if not already done for this cycle
                 if not library_refreshed_for_current_cycle:
@@ -1093,7 +1117,8 @@ async def process_queues():
             # Mark processing complete after this cycle
             is_processing_queue = False
             queue_processing_complete.set()
-            
+            refresh_post_maintenance_availability_gate()
+
             # Short wait before checking queues again
             await asyncio.sleep(2)
             
@@ -1101,6 +1126,7 @@ async def process_queues():
             log_error("Queue Processing Error", f"Error in process_queues: {e}", module="background_tasks", function="process_queues")
             is_processing_queue = False
             queue_processing_complete.set()
+            refresh_post_maintenance_availability_gate()
             await asyncio.sleep(5)
 
 async def process_movie_queue():
@@ -1634,6 +1660,14 @@ async def process_tv_queue():
                                                 subscription_last_checked=datetime.utcnow()
                                             )
                                             recompute_tv_show_status(media_record.id)
+                                            try:
+                                                from seerr.completion_history_manager import sync_tv_history_from_seasons_data
+                                                media_after = get_media_by_tmdb(tmdb_id, media_type)
+                                                if media_after:
+                                                    sync_tv_history_from_seasons_data(media_after, source='automation')
+                                            except Exception as hist_err:
+                                                log_warning("Completion History", f"Failed to sync TV completion history for {movie_title}: {hist_err}",
+                                                           module="background_tasks", function="process_tv_queue")
                                             log_info("Season Update", f"Marked all seasons as completed for {movie_title}", module="background_tasks", function="process_tv_queue")
                                         else:
                                             from seerr.unified_media_manager import update_media_processing_status
@@ -4408,15 +4442,27 @@ def is_safe_to_refresh_library_stats(min_idle_seconds=30):
     
     return is_safe
 
-async def check_failed_items_availability():
+async def check_failed_items_availability(force: bool = False):
     """
     Periodically check Overseerr and mark items complete when they are available there.
     - Movies: run on failed or processing (not completed). If status 5 in Overseerr, mark complete.
     - TV: run on any show that has any episodes marked not processed. Per-season: only if
       that season has status 5 in Overseerr do we mark that season's unprocessed episodes
       complete, then recompute show status.
+
+    When ``force`` is False (scheduled runs), skips while post-maintenance queue drain is
+    still in progress so this job does not compete with the 3am/startup queue wave.
     """
     if not USE_DATABASE:
+        return
+
+    if not force and _post_maintenance_availability_deferred:
+        log_info(
+            "Availability Check",
+            "Skipping scheduled run: waiting for post-maintenance movie/TV queue drain to finish",
+            module="background_tasks",
+            function="check_failed_items_availability",
+        )
         return
 
     try:
